@@ -3,6 +3,9 @@
 A CARLA / Bench2Drive probe daemon that lets an LLM drive a route through a JSON-lines socket and
 be scored by the stock leaderboard. Read `README.md` first, then `docs/DESIGN.md`.
 
+**Status: never run against a live CARLA.** On a GPU machine, work through `docs/FIRST_LIVE_RUN.md`
+before anything else, and log results in its §6.
+
 - To drive a route or run the benchmark, use the `drive-carla` skill.
 - `carla_probe/agent.py` runs inside the leaderboard process and needs carla/leaderboard/srunner.
   `geometry.py`, `pid.py`, `bev.py`, `server.py` and `client.py` do not, and are unit-tested in

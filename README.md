@@ -60,6 +60,9 @@ covers the launch, the observe → plan → advance loop, and the rules in
 
 ## Docs
 
+- [`docs/FIRST_LIVE_RUN.md`](docs/FIRST_LIVE_RUN.md): **start here on a new GPU machine**. The code
+  has not yet been validated against a live CARLA; this is the step-by-step checklist with pass
+  criteria.
 - [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md): commands, frames, driving technique, lessons
 - [`docs/DESIGN.md`](docs/DESIGN.md): how the pause works, the Bench2Drive patch, limitations
 - [`benchmark/PROTOCOL.md`](benchmark/PROTOCOL.md): route sets, rules, reporting
