@@ -1,0 +1,393 @@
+--- a/leaderboard/leaderboard/leaderboard_evaluator.py
++++ b/leaderboard/leaderboard/leaderboard_evaluator.py
+@@ -33,10 +33,7 @@
+ from leaderboard.autoagents.agent_wrapper import AgentError, validate_sensor_configuration, TickRuntimeError
+ from leaderboard.utils.statistics_manager import StatisticsManager, FAILURE_MESSAGES
+ from leaderboard.utils.route_indexer import RouteIndexer
+-import atexit
+-import subprocess
+ import time
+-import random
+ from datetime import datetime
+ 
+ sensors_to_icons = {
+@@ -49,21 +46,13 @@
+     'sensor.speedometer':       'carla_speedometer'
+ }
+ 
+-import socket
+-
+-def find_free_port(starting_port):
+-    port = starting_port
+-    while True:
+-        try:
+-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+-                s.bind(("localhost", port))
+-                return port
+-        except OSError:
+-            port += 1
+-
+ def get_weather_id(weather_conditions):
+     from xml.etree import ElementTree as ET
+-    tree = ET.parse('leaderboard/data/weather.xml')
++    # weather.xml ships with this leaderboard package at <leaderboard>/data/weather.xml. Resolve via
++    # LEADERBOARD_ROOT (set by load_env.sh), falling back to a path relative to this file. (Patched
++    # from LEAD's hardcoded os.environ["LEAD_PROJECT_ROOT"] when vendoring Bench2Drive into nav123d.)
++    _lb_root = os.environ.get("LEADERBOARD_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++    tree = ET.parse(os.path.join(_lb_root, "data", "weather.xml"))
+     root = tree.getroot()
+     def conditions_match(weather, conditions):
+         for (key, value) in weather:
+@@ -161,7 +150,7 @@
+             return self._agent_watchdog.get_status()
+         return False
+ 
+-    def _cleanup(self):
++    def _cleanup(self, results=None):
+         """
+         Remove and destroy all actors
+         """
+@@ -172,7 +161,7 @@
+ 
+         try:
+             if self.agent_instance:
+-                self.agent_instance.destroy()
++                self.agent_instance.destroy(results)
+                 self.agent_instance = None
+         except Exception as e:
+             print("\n\033[91mFailed to stop the agent:", flush=True)
+@@ -198,16 +187,9 @@
+         """
+         Prepares the simulation by getting the client, and setting up the world and traffic manager settings
+         """
+-        self.carla_path = os.environ["CARLA_ROOT"]
+-        args.port = find_free_port(args.port)
+-        cmd1 = f"{os.path.join(self.carla_path, 'CarlaUE4.sh')} -RenderOffScreen -nosound -carla-rpc-port={args.port} -graphicsadapter={args.gpu_rank}"
+-        self.server = subprocess.Popen(cmd1, shell=True, preexec_fn=os.setsid)
+-        print(cmd1, self.server.returncode, flush=True)
+-        atexit.register(os.killpg, self.server.pid, signal.SIGKILL)
+-        time.sleep(30)
+-            
+         attempts = 0
+-        num_max_restarts = 20
++        num_max_restarts = 1
++        client_setup_success = False
+         while attempts < num_max_restarts:
+             try:
+                 client = carla.Client(args.host, args.port)
+@@ -223,27 +205,34 @@
+                 )
+                 client.get_world().apply_settings(settings)
+                 print(f"load_world success , attempts={attempts}", flush=True)
++                client_setup_success = True
+                 break
+             except Exception as e:
+                 print(f"load_world failed , attempts={attempts}", flush=True)
+                 print(e, flush=True)
+                 attempts += 1
+                 time.sleep(5)
++        if not client_setup_success:
++            raise RuntimeError("Failed to connect to CARLA server after {} attempts".format(num_max_restarts))
+         attempts = 0
+-        num_max_restarts = 40
++        num_max_restarts = 1
++        traffic_manager_setup_success = False
+         while attempts < num_max_restarts:
+             try:
+-                args.traffic_manager_port = find_free_port(args.traffic_manager_port)
++                # args.traffic_manager_port = find_free_port(args.traffic_manager_port)
+                 traffic_manager = client.get_trafficmanager(args.traffic_manager_port)
+                 traffic_manager.set_synchronous_mode(True)
+                 traffic_manager.set_hybrid_physics_mode(True)
+                 print(f"traffic_manager init success, try_time={attempts}", flush=True)
++                traffic_manager_setup_success = True
+                 break
+             except Exception as e:
+                 print(f"traffic_manager init fail, try_time={attempts}", flush=True)
+                 print(e, flush=True)
+                 attempts += 1
+                 time.sleep(5)
++        if not traffic_manager_setup_success:
++            raise RuntimeError("Failed to connect to CARLA Traffic Manager after {} attempts".format(num_max_restarts))
+         return client, client_timeout, traffic_manager
+ 
+     def _reset_world_settings(self):
+@@ -269,14 +258,45 @@
+         """
+         Load a new CARLA world without changing the settings and provide data to CarlaDataProvider
+         """
+-        self.world = self.client.load_world(town, reset_settings=False)
+ 
++        print("\033[1m> Loading the world\033[0m", flush=True)
++        t1 = time.time()
++        current_map = self.client.get_world().get_map().name.split("/")[-1]
++        if current_map != town:
++            # Loading a Large Map (Town12/Town13) while synchronous_mode is active crashes
++            # libcarla on some hosts (uncatchable std::runtime_error "s <= road->GetLength()" /
++            # SIGSEGV during the episode change — deterministic on Jean Zay, bisected 2026-07-08).
++            # Drop to asynchronous mode for the load and restore the _setup_simulation settings
++            # right after. Semantically neutral: the scenario only starts ticking after this
++            # method, and no actors exist while the world is briefly async.
++            prev_world = self.client.get_world()
++            prev_settings = prev_world.get_settings()
++            if prev_settings.synchronous_mode:
++                prev_settings.synchronous_mode = False
++                prev_settings.fixed_delta_seconds = None
++                prev_world.apply_settings(prev_settings)
++                self.traffic_manager.set_synchronous_mode(False)
++            self.world = self.client.load_world(town, reset_settings=False)
++            settings = self.world.get_settings()
++            settings.synchronous_mode = True
++            settings.fixed_delta_seconds = 1.0 / self.frame_rate
++            settings.deterministic_ragdolls = True
++            settings.spectator_as_ego = False
++            self.world.apply_settings(settings)
++            self.traffic_manager.set_synchronous_mode(True)
++        else:
++            self.world = self.client.get_world()
++        print(f"\033[1m>  Load_world time={time.time()-t1}", flush=True)
++
++        t2 = time.time()
+         # Large Map settings are always reset, for some reason
+         settings = self.world.get_settings()
+         settings.tile_stream_distance = 650
+         settings.actor_active_distance = 650
+         self.world.apply_settings(settings)
++        print(f"\033[1m> Apply settings time={time.time()-t2}", flush=True)
+ 
++        t3 = time.time()
+         self.world.reset_all_traffic_lights()
+         CarlaDataProvider.set_client(self.client)
+         CarlaDataProvider.set_traffic_manager_port(args.traffic_manager_port)
+@@ -284,6 +304,7 @@
+ 
+         # This must be here so that all route repetitions use the same 'unmodified' seed
+         self.traffic_manager.set_random_device_seed(args.traffic_manager_seed)
++        print(f"\033[1m> Reset all traffic lights time={time.time()-t3}", flush=True)
+ 
+         # Wait for the world to be ready
+         self.world.tick()
+@@ -302,6 +323,7 @@
+         self.statistics_manager.compute_route_statistics(
+             route_index, self.manager.scenario_duration_system, self.manager.scenario_duration_game, crash_message
+         )
++        return self.statistics_manager._results.checkpoint.records[route_index]
+ 
+     def _load_and_run_scenario(self, args, config):
+         """
+@@ -325,8 +347,6 @@
+         save_name = f"{route_name}_{town_name}_{scenario_name}_{weather_id}_{currentTime}"
+         self.statistics_manager.create_route_data(route_name, scenario_name, weather_id, save_name, town_name, config.index)
+ 
+-        print("\033[1m> Loading the world\033[0m", flush=True)
+-
+         # Load the world and the scenario
+         try:
+             self._load_and_wait_for_world(args, config.town)
+@@ -339,13 +359,11 @@
+             print(f"\n{traceback.format_exc()}\033[0m", flush=True)
+ 
+             entry_status, crash_message = FAILURE_MESSAGES["Simulation"]
+-            self._register_statistics(config.index, entry_status, crash_message)
+-            self._cleanup()
++            result = self._register_statistics(config.index, entry_status, crash_message)
++            self._cleanup(result)
+             return True
+-
+-        print("\033[1m> Setting up the agent\033[0m", flush=True)
+-
+         # Set up the user's agent, and the timer to avoid freezing the simulation
++        time_setup_agent = time.time()
+         try:
+             self._agent_watchdog = Watchdog(args.timeout)
+             self._agent_watchdog.start()
+@@ -385,8 +403,8 @@
+             print(f"{e}\033[0m\n", flush=True)
+ 
+             entry_status, crash_message = FAILURE_MESSAGES["Sensors"]
+-            self._register_statistics(config.index, entry_status, crash_message)
+-            self._cleanup()
++            result = self._register_statistics(config.index, entry_status, crash_message)
++            self._cleanup(result)
+             return True
+ 
+         except Exception as e:
+@@ -396,10 +414,13 @@
+             print(f"{e}\033[0m\n", flush=True)
+ 
+             entry_status, crash_message = FAILURE_MESSAGES["Agent_init"]
+-            self._register_statistics(config.index, entry_status, crash_message)
+-            self._cleanup()
++            result = self._register_statistics(config.index, entry_status, crash_message)
++            self._cleanup(result)
+             return True
+ 
++        finally:
++            print(f"\033[1m> Agent setup time={time.time()-time_setup_agent:.2f}s\033[0m", flush=True)
++
+         print("\033[1m> Running the route\033[0m", flush=True)
+ 
+         # Run the scenario
+@@ -409,6 +430,11 @@
+                 self.client.start_recorder("{}/{}_rep{}.log".format(args.record, config.name, config.repetition_index))
+             self.manager.load_scenario(self.route_scenario, self.agent_instance, config.index, config.repetition_index)
+             self.manager.tick_count = 0
++            
++            # Pass scenario reference to agent for infraction tracking (if supported)
++            if hasattr(self.agent_instance, 'set_scenario'):
++                self.agent_instance.set_scenario(self.route_scenario)
++            
+             self.manager.run_scenario()
+ 
+         except AgentError:
+@@ -420,10 +446,10 @@
+ 
+         except KeyboardInterrupt:
+             return True
+-        
++
+         except TickRuntimeError:
+             entry_status, crash_message = "Started", "TickRuntime"
+-        
++
+         except Exception:
+             print("\n\033[91mError during the simulation:", flush=True)
+             print(f"\n{traceback.format_exc()}\033[0m", flush=True)
+@@ -434,12 +460,12 @@
+         try:
+             print("\033[1m> Stopping the route\033[0m", flush=True)
+             self.manager.stop_scenario()
+-            self._register_statistics(config.index, entry_status, crash_message)
++            result = self._register_statistics(config.index, entry_status, crash_message)
+ 
+             if args.record:
+                 self.client.stop_recorder()
+ 
+-            self._cleanup()
++            self._cleanup(result)
+ 
+         except Exception:
+             print("\n\033[91mFailed to stop the scenario, the statistics might be empty:", flush=True)
+@@ -488,7 +514,7 @@
+             self._ros1_server.shutdown()
+ 
+         # Go back to asynchronous mode
+-        self._reset_world_settings()
++        # self._reset_world_settings()
+ 
+         if not crashed:
+             # Save global statistics
+@@ -496,11 +522,9 @@
+             print("\033[1m> Registering the global statistics\033[0m", flush=True)
+             self.statistics_manager.compute_global_statistics()
+             self.statistics_manager.validate_and_write_statistics(self.sensors_initialized, crashed)
+-        
++
+         if crashed:
+-            cmd2 = "ps -ef | grep '-graphicsadapter="+ str(args.gpu_rank) + "' | grep -v grep | awk '{print $2}' | xargs -r kill -9"
+-            server = subprocess.Popen(cmd2, shell=True, preexec_fn=os.setsid)
+-            atexit.register(os.killpg, server.pid, signal.SIGKILL)
++            pass
+ 
+         return crashed
+ 
+@@ -561,4 +585,4 @@
+         sys.exit(0)
+ 
+ if __name__ == '__main__':
+-    main()
++    main()
+\ No newline at end of file
+--- a/leaderboard/leaderboard/scenarios/route_scenario.py
++++ b/leaderboard/leaderboard/scenarios/route_scenario.py
+@@ -429,8 +429,15 @@
+         # These stop the route early to save computational time
+         criteria.add_child(InRouteTest(
+             self.ego_vehicles[0], route=self.route, offroad_max=30, terminate_on_failure=True))
++        # Env-tunable: a stalled agent micro-creeping at 0.1-0.3 m/s never trips the stock
++        # 0.1 m/s threshold and instead burns the full 4000-tick TickRuntime budget. Defaults
++        # keep the official leaderboard semantics; raise AGENT_BLOCKED_MIN_SPEED (e.g. 0.3)
++        # on analysis splits to fail such stalls fast and label them honestly as blocked.
+         criteria.add_child(ActorBlockedTest(
+-            self.ego_vehicles[0], min_speed=0.1, max_time=60.0, terminate_on_failure=True, name="AgentBlockedTest")
++            self.ego_vehicles[0],
++            min_speed=float(os.environ.get("AGENT_BLOCKED_MIN_SPEED", "0.1")),
++            max_time=float(os.environ.get("AGENT_BLOCKED_MAX_TIME", "60.0")),
++            terminate_on_failure=True, name="AgentBlockedTest")
+         )
+ 
+         return criteria
+--- a/leaderboard/leaderboard/scenarios/scenario_manager.py
++++ b/leaderboard/leaderboard/scenarios/scenario_manager.py
+@@ -11,6 +11,7 @@
+ """
+ 
+ from __future__ import print_function
++import os
+ import signal
+ import sys
+ import time
+@@ -179,8 +180,12 @@
+             self.tick_count += 1
+             self._watchdog.pause()
+ 
+-            if self.tick_count > 4000:
+-                raise TickRuntimeError("RuntimeError, tick_count > 4000")
++            # Env-tunable route tick budget (stock 4000 = 200 s game time @ 20 Hz). Raise via
++            # AGENT_MAX_TICKS on analysis runs so scenario timeouts can resolve and the route
++            # can still finish afterwards, instead of truncating as "Failed - TickRuntime".
++            max_ticks = int(os.environ.get("AGENT_MAX_TICKS", "4000"))
++            if self.tick_count > max_ticks:
++                raise TickRuntimeError(f"RuntimeError, tick_count > {max_ticks}")
+ 
+             try:
+                 self._agent_watchdog.resume()
+--- a/leaderboard/leaderboard/utils/route_parser.py
++++ b/leaderboard/leaderboard/utils/route_parser.py
+@@ -129,7 +129,7 @@
+                 scenario_config.name = scenario.attrib.get('name')
+                 scenario_config.type = scenario.attrib.get('type')
+ 
+-                for elem in scenario.getchildren():
++                for elem in list(scenario):
+                     if elem.tag == 'trigger_point':
+                         scenario_config.trigger_points.append(convert_elem_to_transform(elem))
+                     elif elem.tag == 'other_actor':
+--- a/scenario_runner/srunner/scenariomanager/scenarioatomics/atomic_behaviors.py
++++ b/scenario_runner/srunner/scenariomanager/scenarioatomics/atomic_behaviors.py
+@@ -4286,7 +4286,12 @@
+         Setup actor
+         """
+         super().__init__(name)
+-        self._duration = duration
++        # Env-cappable: while a scenario runs, ActorBlockedTest is DISABLED (initialise below),
++        # so an agent deadlocked inside a scenario zone can only be resolved by this timeout —
++        # but stock durations (e.g. 240 s enter-flow) exceed the tick-cap budget and never fire.
++        # AGENT_SCENARIO_TIMEOUT (seconds) caps the duration on analysis runs; unset = stock.
++        _env_cap = os.environ.get("AGENT_SCENARIO_TIMEOUT")
++        self._duration = min(duration, float(_env_cap)) if _env_cap else duration
+         self._scenario_name = scenario_name
+         self._start_time = 0
+         self._scenario_timeout = False
+--- a/scenario_runner/srunner/tools/route_parser.py
++++ b/scenario_runner/srunner/tools/route_parser.py
+@@ -80,7 +80,7 @@
+                 scenario_config.name = scenario.attrib.get('name')
+                 scenario_config.type = scenario.attrib.get('type')
+ 
+-                for elem in scenario.getchildren():
++                for elem in list(scenario):
+                     if elem.tag == 'trigger_point':
+                         scenario_config.trigger_points.append(convert_elem_to_transform(elem))
+                     elif elem.tag == 'other_actor':
+--- a/scenario_runner/srunner/tools/scenario_parser.py
++++ b/scenario_runner/srunner/tools/scenario_parser.py
+@@ -68,7 +68,7 @@
+                 config.name = scenario_config_name
+                 config.type = scenario_config_type
+ 
+-                for elem in scenario.getchildren():
++                for elem in list(scenario):
+                     # Elements with special parsing
+                     if elem.tag == 'ego_vehicle':
+                         config.ego_vehicles.append(ActorConfigurationData.parse_from_node(elem, 'hero'))

@@ -1,0 +1,3 @@
+# The pinned single-route benchmark: unprotected left turn at a non-signalized junction with
+# continuous cross traffic (gap acceptance). Needs the Town12 additional map.
+2091  # Town12  NonSignalizedJunctionLeftTurn

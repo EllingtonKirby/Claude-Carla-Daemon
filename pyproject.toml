@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carla-probe"
+version = "0.1.0"
+description = "Pause-and-command CARLA/Bench2Drive daemon for benchmarking LLM drivers"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+dependencies = []  # the client is pure stdlib; the simulation side is installed by scripts/env.sh
+
+[project.optional-dependencies]
+dev = ["pytest", "numpy", "opencv-python-headless", "pyyaml"]
+
+[project.scripts]
+carla-probe = "carla_probe.client:cli"
+
+[tool.setuptools]
+packages = ["carla_probe"]
+
+[tool.setuptools.package-data]
+carla_probe = ["config.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

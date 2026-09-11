@@ -1,0 +1,91 @@
+# CARLA probe daemon configuration.
+# Every key is REQUIRED: the agent reads cfg["key"] with no code-side defaults, so a missing key
+# fails at launch rather than mid-session. run_session.sh snapshots this file into the session
+# directory and passes the snapshot to the leaderboard as --agent-config (override the source file
+# with PROBE_CONFIG=/path/to/your.yaml).
+
+# What the driver may see, enforced by the daemon (docs/OPERATOR_GUIDE.md §3):
+#   privileged  ground-truth scene: actors, lanes, traffic lights, stop signs, speed limit, live score
+#   sensors     Bench2Drive SENSORS-track inputs only: cameras, speedometer, IMU, GNSS and the
+#               leaderboard's route plan; ego pose is estimated from GNSS + compass
+# run_session.sh ACCESS=sensors|privileged rewrites this key in the session's config snapshot.
+access: privileged
+
+# Command socket. PROBE_HOST / PROBE_PORT env vars override (run_session.sh forwards them).
+# The protocol has NO authentication: keep 127.0.0.1 unless the network is trusted.
+host: 127.0.0.1
+port: 8790
+
+# Session artifacts (commands.jsonl, trajectory.jsonl, frames/, camera_log/, probe_done.json).
+# Relative paths resolve against the evaluator's CWD, which run_session.sh sets to the session dir.
+output_dir: .
+
+# get_state / observe: actors, lights and signs within this radius of the ego (m).
+state_radius_m: 80.0
+# observe: how many nearest actors / parked vehicles to list.
+observe_nearest_actors: 12
+# nav.route_points_ego: route points at these arclengths ahead of the ego (m).
+route_lookahead_m: [5.0, 10.0, 20.0, 40.0]
+# Route projection searches this many route segments ahead of the last match each query, so a
+# route passing near itself never snaps the ego to the other pass.
+route_search_window: 300
+
+# run_until_event event=stopped: CONSECUTIVE ticks below the speed threshold (20 ticks = 1 s).
+stopped_speed_mps: 0.1
+stopped_min_ticks: 20
+
+# Own collision sensor on the ego (run_until_event collision, stop_on_collision, collision_contacts).
+# Independent of leaderboard scoring; it counts CONTACTS, so sustained contact counts many times.
+# Privileged access only: it is never attached with access: sensors.
+collision_sensor: true
+
+# Sensors access: complementary filter on the GNSS position (noise ~0.5 m per sample). Each tick the
+# estimate is dead-reckoned with speed + compass, then pulled toward the GNSS fix by this gain.
+# 1.0 = raw GNSS.
+gnss_position_gain: 0.2
+
+# apply_plan without target_speed: waypoints are this many seconds apart, so spacing encodes speed.
+plan_interval_s: 0.5
+
+# Plan-tracking PID (carla_probe/pid.py). These are the gains validated in the original probe
+# sessions. aim_dist is the steering lookahead (m): lower it for tighter low-speed junction tracking.
+pid:
+  turn_kp: 0.75
+  turn_ki: 0.75
+  turn_kd: 0.3
+  turn_n: 40
+  speed_kp: 5.0
+  speed_ki: 0.5
+  speed_kd: 1.0
+  speed_n: 40
+  max_throttle: 0.75
+  clip_delta: 0.25
+  brake_speed: 0.4
+  brake_ratio: 1.1
+  aim_dist: 12.0
+  max_speed: 1.0e9   # hard cap on the desired speed (m/s); 1e9 = off
+
+# render_bev: ego-centred extent (m) and resolution. draw_lanes expands the lane graph around the
+# ego (lane_step_m sample spacing, capped at lane_max_nodes samples).
+bev:
+  forward_m: 50.0
+  back_m: 20.0
+  side_m: 35.0
+  px_per_m: 8.0
+  draw_lanes: true
+  lane_step_m: 2.0
+  lane_max_nodes: 6000
+
+record:
+  trajectory: true            # per-tick pose + control to trajectory.jsonl (cheap)
+  camera_id: CAM_FRONT        # camera logged to camera_log/ when frame recording is on
+  camera_every_n_ticks: 0     # 0 = off at launch; toggle at runtime with `record on=true every=2`
+
+# RGB cameras. CARLA vehicle frame: x forward, y RIGHT, z up (m); yaw in degrees, + = to the right.
+# The leaderboard rejects mounts more than 3 m from the vehicle origin and more than 8 cameras.
+# Every camera renders every tick, so fewer / smaller cameras = a faster simulation.
+cameras:
+  - {id: CAM_FRONT,       x: 0.8,  y: 0.0,  z: 1.7, roll: 0.0, pitch: 0.0, yaw: 0.0,   width: 1024, height: 512, fov: 100}
+  - {id: CAM_FRONT_LEFT,  x: 0.5,  y: -0.5, z: 1.7, roll: 0.0, pitch: 0.0, yaw: -60.0, width: 800,  height: 450, fov: 90}
+  - {id: CAM_FRONT_RIGHT, x: 0.5,  y: 0.5,  z: 1.7, roll: 0.0, pitch: 0.0, yaw: 60.0,  width: 800,  height: 450, fov: 90}
+  - {id: CAM_BACK,        x: -1.5, y: 0.0,  z: 1.7, roll: 0.0, pitch: 0.0, yaw: 180.0, width: 800,  height: 450, fov: 110}
