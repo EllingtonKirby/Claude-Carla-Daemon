@@ -41,7 +41,7 @@ It measures how well an LLM drives a car in closed loop, scored by an unmodified
 ## 2. Setup
 
 **Machine:** Linux, an NVIDIA GPU with ≥ 8 GB free VRAM per concurrent session, ≈ 30 GB disk for
-CARLA, internet for setup; `git`, `patch`, `wget`, and `uv` (or `python3.10`). The system `python3`
+CARLA, internet for setup; `git`, `patch`, `wget`, and `uv` (or `python3.10`); `ffmpeg` with libx264 for videos. The system `python3`
 may be old; the scripts don't rely on it beyond stdlib basics.
 
 ```bash
@@ -237,6 +237,8 @@ are in command order.
     overlaid with the step, the decision in force (command + `why`) and any scoring event at that
     tick. The `front` view reproduces the driver's `CAM_FRONT`.
 - `python scripts/make_video.py SESSION_DIR`: mp4 from `camera_log/`.
+- Videos (`--video`, `make_video.py`) are H.264 (`yuv420p`) encoded by ffmpeg, so they play in browsers and
+  common players. Replays run at real time (10 fps with `--every 2`).
 
 ### 5.3 Reviewing decisions
 

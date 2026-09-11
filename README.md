@@ -22,7 +22,7 @@ Claude ──(carla_probe.client, JSON lines)──▶ ProbeAgent ◀─run_step
 ## Requirements
 
 - Linux with an NVIDIA GPU that can run CARLA 0.9.15 (≈8 GB VRAM or more), about 30 GB of disk
-- `git`, `patch`, `wget`, and [uv](https://docs.astral.sh/uv/) (or `python3.10`)
+- `git`, `patch`, `wget`, and [uv](https://docs.astral.sh/uv/) (or `python3.10`); `ffmpeg` (with libx264) to build videos
 - The client alone needs only Python ≥ 3.8 and no packages
 
 ## Setup

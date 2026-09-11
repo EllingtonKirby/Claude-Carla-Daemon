@@ -4,7 +4,7 @@
     python scripts/replay_sim.py SESSION_DIR info
     python scripts/replay_sim.py SESSION_DIR collisions
     python scripts/replay_sim.py SESSION_DIR frames --from-step 200 --to-step 320 [--view chase|front|top]
-                                 [--every 1] [--size 960x540] [--video] [--out DIR]
+                                 [--every 1] [--size 960x540] [--video] [--out DIR]    # --video needs ffmpeg
 
 The recording (`<route>_rep0.log`, written when run_session.sh runs with SIM_RECORD=1) holds every
 actor's state on every tick, so any moment of a drive can be re-rendered from any viewpoint after the
@@ -117,16 +117,21 @@ def connect(port: int, gpu: int) -> Tuple[carla.Client, Optional[subprocess.Pope
     proc = subprocess.Popen([f"{carla_root}/CarlaUE4.sh", "-RenderOffScreen", "-nosound", f"-graphicsadapter={gpu}",
                              f"-carla-rpc-port={port}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
-    for _ in range(90):
-        time.sleep(2)
-        try:
-            client.get_server_version()
-            return client, proc
-        except RuntimeError:
-            if proc.poll() is not None:
-                sys.exit("CARLA exited during startup")
-    os.killpg(proc.pid, signal.SIGKILL)
-    sys.exit("CARLA did not answer within 180 s")
+    try:
+        for _ in range(180):  # a cold start on a fresh GPU can take several minutes
+            time.sleep(2)
+            try:
+                client = carla.Client("localhost", port)  # a client created before the server is up never connects
+                client.set_timeout(5.0)
+                client.get_server_version()
+                return client, proc
+            except RuntimeError:
+                if proc.poll() is not None:
+                    sys.exit("CARLA exited during startup")
+        sys.exit("CARLA did not answer within 360 s")
+    except BaseException:  # includes SystemExit from a signal: never leave the server behind
+        os.killpg(proc.pid, signal.SIGKILL)
+        raise
 
 
 def _image_for(images: "queue.Queue[carla.Image]", frame: int, timeout_s: float = 10.0) -> Optional[carla.Image]:
@@ -226,10 +231,10 @@ def render_frames(client: carla.Client, sess: Session, args: argparse.Namespace)
     print(f"wrote {len(written)} frame(s) to {out_dir}" + (f" ({missing} missing: ego not spawned yet or no image)" if missing else ""))
     if args.video and written:
         video = out_dir / "replay.mp4"
-        writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 1.0 / (sess.dt * args.every), (width, height))
-        for path in written:
-            writer.write(cv2.imread(str(path)))
-        writer.release()
+        # ffmpeg H.264 (yuv420p, faststart) plays everywhere, unlike OpenCV's mp4v. Real-time rate.
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-framerate", f"{1.0 / (sess.dt * args.every):g}",
+                        "-pattern_type", "glob", "-i", str(out_dir / "frame_*.jpg"), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-crf", "20", "-movflags", "+faststart", str(video)], check=True)
         print(f"wrote {video}")
 
 
@@ -249,6 +254,10 @@ def main() -> int:
     args = ap.parse_args()
 
     sess = Session(args.session)
+    # The server we start runs in its own session: turn SIGTERM/SIGHUP (e.g. `timeout`) into a normal
+    # exit so the finally below still stops it.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: sys.exit(1))
     client, proc = connect(args.port, args.gpu)
     client.set_timeout(300.0)
     try:
