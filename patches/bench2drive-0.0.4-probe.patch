@@ -1,6 +1,14 @@
 --- a/leaderboard/leaderboard/leaderboard_evaluator.py
 +++ b/leaderboard/leaderboard/leaderboard_evaluator.py
-@@ -33,10 +33,7 @@
+@@ -17,6 +17,7 @@
+ from argparse import RawTextHelpFormatter
+ from distutils.version import LooseVersion
+ import importlib
++import json
+ import os
+ import pkg_resources
+ import sys
+@@ -33,10 +34,7 @@
  from leaderboard.autoagents.agent_wrapper import AgentError, validate_sensor_configuration, TickRuntimeError
  from leaderboard.utils.statistics_manager import StatisticsManager, FAILURE_MESSAGES
  from leaderboard.utils.route_indexer import RouteIndexer
@@ -11,7 +19,7 @@
  from datetime import datetime
  
  sensors_to_icons = {
-@@ -49,21 +46,13 @@
+@@ -49,21 +47,13 @@
      'sensor.speedometer':       'carla_speedometer'
  }
  
@@ -38,7 +46,7 @@
      root = tree.getroot()
      def conditions_match(weather, conditions):
          for (key, value) in weather:
-@@ -161,7 +150,7 @@
+@@ -161,7 +151,7 @@
              return self._agent_watchdog.get_status()
          return False
  
@@ -47,7 +55,7 @@
          """
          Remove and destroy all actors
          """
-@@ -172,7 +161,7 @@
+@@ -172,7 +162,7 @@
  
          try:
              if self.agent_instance:
@@ -56,7 +64,7 @@
                  self.agent_instance = None
          except Exception as e:
              print("\n\033[91mFailed to stop the agent:", flush=True)
-@@ -198,16 +187,9 @@
+@@ -198,16 +188,9 @@
          """
          Prepares the simulation by getting the client, and setting up the world and traffic manager settings
          """
@@ -75,7 +83,7 @@
          while attempts < num_max_restarts:
              try:
                  client = carla.Client(args.host, args.port)
-@@ -223,27 +205,34 @@
+@@ -223,27 +206,34 @@
                  )
                  client.get_world().apply_settings(settings)
                  print(f"load_world success , attempts={attempts}", flush=True)
@@ -112,7 +120,7 @@
          return client, client_timeout, traffic_manager
  
      def _reset_world_settings(self):
-@@ -269,14 +258,45 @@
+@@ -269,14 +259,45 @@
          """
          Load a new CARLA world without changing the settings and provide data to CarlaDataProvider
          """
@@ -159,7 +167,7 @@
          self.world.reset_all_traffic_lights()
          CarlaDataProvider.set_client(self.client)
          CarlaDataProvider.set_traffic_manager_port(args.traffic_manager_port)
-@@ -284,6 +304,7 @@
+@@ -284,6 +305,7 @@
  
          # This must be here so that all route repetitions use the same 'unmodified' seed
          self.traffic_manager.set_random_device_seed(args.traffic_manager_seed)
@@ -167,7 +175,7 @@
  
          # Wait for the world to be ready
          self.world.tick()
-@@ -302,6 +323,7 @@
+@@ -302,6 +324,7 @@
          self.statistics_manager.compute_route_statistics(
              route_index, self.manager.scenario_duration_system, self.manager.scenario_duration_game, crash_message
          )
@@ -175,7 +183,7 @@
  
      def _load_and_run_scenario(self, args, config):
          """
-@@ -325,8 +347,6 @@
+@@ -325,8 +348,6 @@
          save_name = f"{route_name}_{town_name}_{scenario_name}_{weather_id}_{currentTime}"
          self.statistics_manager.create_route_data(route_name, scenario_name, weather_id, save_name, town_name, config.index)
  
@@ -184,7 +192,7 @@
          # Load the world and the scenario
          try:
              self._load_and_wait_for_world(args, config.town)
-@@ -339,13 +359,11 @@
+@@ -339,13 +360,11 @@
              print(f"\n{traceback.format_exc()}\033[0m", flush=True)
  
              entry_status, crash_message = FAILURE_MESSAGES["Simulation"]
@@ -201,7 +209,7 @@
          try:
              self._agent_watchdog = Watchdog(args.timeout)
              self._agent_watchdog.start()
-@@ -385,8 +403,8 @@
+@@ -385,8 +404,8 @@
              print(f"{e}\033[0m\n", flush=True)
  
              entry_status, crash_message = FAILURE_MESSAGES["Sensors"]
@@ -212,7 +220,7 @@
              return True
  
          except Exception as e:
-@@ -396,10 +414,13 @@
+@@ -396,19 +415,33 @@
              print(f"{e}\033[0m\n", flush=True)
  
              entry_status, crash_message = FAILURE_MESSAGES["Agent_init"]
@@ -228,8 +236,17 @@
          print("\033[1m> Running the route\033[0m", flush=True)
  
          # Run the scenario
-@@ -409,6 +430,11 @@
-                 self.client.start_recorder("{}/{}_rep{}.log".format(args.record, config.name, config.repetition_index))
+         try:
+             # Load scenario and run it
+             if args.record:
+-                self.client.start_recorder("{}/{}_rep{}.log".format(args.record, config.name, config.repetition_index))
++                record_name = "{}/{}_rep{}".format(args.record, config.name, config.repetition_index)
++                self.client.start_recorder(record_name + ".log")
++                # Probe: the world frame at recorder start maps replay time to agent frames (docs/HANDOFF.md §5)
++                with open(record_name + ".json", "w") as fd:
++                    json.dump({"recorder_file": record_name + ".log",
++                               "start_world_frame": self.world.get_snapshot().frame,
++                               "fixed_delta_seconds": self.world.get_settings().fixed_delta_seconds}, fd)
              self.manager.load_scenario(self.route_scenario, self.agent_instance, config.index, config.repetition_index)
              self.manager.tick_count = 0
 +            
@@ -240,7 +257,7 @@
              self.manager.run_scenario()
  
          except AgentError:
-@@ -420,10 +446,10 @@
+@@ -420,10 +453,10 @@
  
          except KeyboardInterrupt:
              return True
@@ -253,7 +270,7 @@
          except Exception:
              print("\n\033[91mError during the simulation:", flush=True)
              print(f"\n{traceback.format_exc()}\033[0m", flush=True)
-@@ -434,12 +460,12 @@
+@@ -434,12 +467,12 @@
          try:
              print("\033[1m> Stopping the route\033[0m", flush=True)
              self.manager.stop_scenario()
@@ -268,7 +285,7 @@
  
          except Exception:
              print("\n\033[91mFailed to stop the scenario, the statistics might be empty:", flush=True)
-@@ -488,7 +514,7 @@
+@@ -488,7 +521,7 @@
              self._ros1_server.shutdown()
  
          # Go back to asynchronous mode
@@ -277,7 +294,7 @@
  
          if not crashed:
              # Save global statistics
-@@ -496,11 +522,9 @@
+@@ -496,11 +529,9 @@
              print("\033[1m> Registering the global statistics\033[0m", flush=True)
              self.statistics_manager.compute_global_statistics()
              self.statistics_manager.validate_and_write_statistics(self.sensors_initialized, crashed)
@@ -291,7 +308,7 @@
  
          return crashed
  
-@@ -561,4 +585,4 @@
+@@ -561,4 +592,4 @@
          sys.exit(0)
  
  if __name__ == '__main__':

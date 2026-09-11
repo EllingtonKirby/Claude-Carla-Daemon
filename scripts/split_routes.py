@@ -7,8 +7,6 @@
 One evaluator process drives one route file, so probe sessions take single-route XMLs. Stdlib only.
 """
 
-from __future__ import annotations
-
 import argparse
 import sys
 import xml.etree.ElementTree as ET

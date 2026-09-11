@@ -1,2 +1,2 @@
 # Harness check: short open-road route, no large map. Use it to validate an install, not to benchmark.
-25378  # Town03  YieldToEmergencyVehicle
+25378  # Town03

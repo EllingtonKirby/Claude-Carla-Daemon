@@ -35,21 +35,28 @@ it adds no information beyond what the sensors show.
 
 ## Rules
 
-1. **Fresh session per route**: `scripts/run_session.sh <id>` with the default session directory.
-   Never reuse a session dir (the leaderboard would skip the route).
+1. **Fresh session per route, isolated driver**: launch benchmark runs with
+   `scripts/run_eval.sh <id> <track> <model>` (`docs/HANDOFF.md` §4). It uses a fresh session
+   directory, the canonical driver prompt, and a driver sandbox that passes an isolation check.
+   Never reuse a session dir (the leaderboard would skip the route). Runs driven interactively are
+   not benchmark results.
 2. **One attempt per route.** Report crashed or aborted sessions as failures (DS 0); do not rerun
    until you get a good one.
 3. **Fixed settings:** `TM_SEED=0`, the default `carla_probe/config.yaml` apart from `access`,
    `AGENT_MAX_TICKS` unset (the stock 4000-tick, 200 s budget). Report any deviation next to the
-   result.
-4. **Probe protocol only.** No reading route XMLs, scenario definitions or simulator code, no editing
+   result. Recording knobs that don't change what the driver sees are allowed: `SIM_RECORD` (on by
+   default) and `RECORD_CAMERA_EVERY` (periodic camera frames to `camera_log/`).
+4. **Justified decisions:** every driving command carries `why="..."` (enforced by the default
+   `require_justification: true`). Justifications are part of the result and are reviewed against
+   the replayed scene.
+5. **Probe protocol only.** No reading route XMLs, scenario definitions or simulator code, no editing
    code or config during a run, and no human hints.
-5. **Sensors track: no side channels.** The session directory holds privileged data
+6. **Sensors track: no side channels.** The session directory holds privileged data
    (`evaluator.log`, `carla.log`, `result.json`). While driving, open only the files whose paths the
    daemon returns (`get_camera`, `render_bev`, `dump_frame`). Reading logs is allowed only to
    diagnose a launch failure before the first driving command, or after the route has ended.
-6. **No `shutdown`** unless the session is unrecoverable; it scores as an agent failure.
-7. Pausing is free: thinking time between commands does not consume route time.
+7. **No `shutdown`** unless the session is unrecoverable; it scores as an agent failure.
+8. Pausing is free: thinking time between commands does not consume route time.
 
 ## Reporting
 

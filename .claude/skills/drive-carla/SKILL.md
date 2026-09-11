@@ -12,8 +12,9 @@ You are the driver. There is no autopilot: the ego brakes (`hold`) until you com
 1. Pick the track. Use `sensors` (cameras + ego sensors + route plan, the Bench2Drive-eligible
    inputs) unless the user asks for `privileged` (ground-truth scene). If the request is ambiguous,
    ask.
-2. `source scripts/env.sh` (fails with a clear message if setup is missing; run the setup
-   commands from README.md).
+2. `source scripts/env.sh` (fails with a clear message if setup is missing; see
+   `docs/HANDOFF.md` §2). Each Bash call is a fresh shell: re-source it, or call
+   `.venv/bin/python -m carla_probe.client` directly.
 3. Start the session in the background (it blocks until the route ends):
    `ACCESS=<track> bash scripts/run_session.sh <ROUTE_ID>`. The standard benchmark is route 2091
    and the smoke route is 25378. Note the session dir it prints.
@@ -33,8 +34,9 @@ technique). Then repeat:
      geometry is unclear.
 2. **Decide the next 1–2 s.** Build `apply_plan` waypoints (ego frame: `fwd` ahead, `left` to the
    LEFT) from the route points and the lane. Set `target_speed` to a safe speed, and 0 to stop.
-3. **Advance.** Use `apply_plan ... ticks=<5-40>`: short near other road users, longer on empty
-   road. Privileged only: add `stop_on_collision=true`.
+3. **Advance.** Use `apply_plan ... ticks=<5-40> why="..."`: short near other road users, longer
+   on empty road. Privileged only: add `stop_on_collision=true`. Every driving command needs `why`:
+   what you observed and why this command follows from it (it is logged for review).
 4. **Check the reply** (`result.reason`, status; on privileged also `new_infractions` and
    `status.score`) and adapt.
 
@@ -46,6 +48,7 @@ Follow `benchmark/PROTOCOL.md`:
 - probe protocol only, with no reading of route XMLs or scenario code;
 - no config or code edits;
 - one attempt;
+- `why="..."` on every driving command, stating the reason you actually acted on;
 - no `shutdown` unless the session is unrecoverable.
 
 **On the sensors track, open only files whose paths the daemon returns.** Never read

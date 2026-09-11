@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# Run one benchmark eval: a probe session driven by an isolated, headless Claude Code driver.
+# See docs/HANDOFF.md §4 for the rules and §5 for what gets recorded.
+#
+#   bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> [SESSION_DIR]
+#   bash scripts/run_eval.sh 2091 sensors claude-opus-5
+#
+# Blocks until the route is scored (run it in the background). Steps:
+#   1. launch scripts/run_session.sh and wait until the route is loaded and paused;
+#   2. build the driver's sandbox: an empty working directory outside the repo, no inherited Claude
+#      Code settings, and permissions limited to the probe client, the session's frames/ and the
+#      three driver docs;
+#   3. pre-flight isolation check: a cheap model must be DENIED reading the session directory;
+#   4. run the driver (`claude -p`, canonical prompt below), streaming its transcript to the session;
+#   5. if the driver exits before the route ends, abort the session (scored as an agent failure).
+#
+# Env: GPU_RANK (0)  CARLA_PORT (20000)  PROBE_PORT (8790): stride CARLA_PORT by >= 10 per parallel run
+#      LOAD_TIMEOUT_S (900)  ISOLATION_CHECK (1; 0 skips step 3)  CHECK_MODEL (haiku)
+#      SIM_RECORD (1)  RECORD_CAMERA_EVERY (config value): recording knobs, passed to run_session.sh
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+USAGE="usage: run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> [SESSION_DIR]"
+ROUTE="${1:?$USAGE}"
+TRACK="${2:?$USAGE}"
+MODEL="${3:?$USAGE}"
+case "$TRACK" in sensors | privileged) ;; *) echo "ERROR: track must be sensors or privileged" >&2; exit 1 ;; esac
+command -v claude >/dev/null || { echo "ERROR: claude (Claude Code CLI) not on PATH" >&2; exit 1; }
+
+if [ -z "${LEADERBOARD_ROOT:-}" ]; then
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/scripts/env.sh"
+fi
+
+: "${GPU_RANK:=0}"
+: "${CARLA_PORT:=20000}"
+: "${PROBE_PORT:=8790}"
+: "${LOAD_TIMEOUT_S:=900}"
+: "${ISOLATION_CHECK:=1}"
+: "${CHECK_MODEL:=haiku}"
+export GPU_RANK CARLA_PORT PROBE_PORT
+
+SESSION_DIR="$(realpath -m "${4:-$REPO_ROOT/sessions/$(date +%Y%m%d_%H%M%S)_route_${ROUTE}_${TRACK}}")"
+[ -e "$SESSION_DIR/result.json" ] && { echo "ERROR: $SESSION_DIR already has a result.json" >&2; exit 1; }
+mkdir -p "$SESSION_DIR"
+PY="$REPO_ROOT/.venv/bin/python"
+ADDR="127.0.0.1:$PROBE_PORT"
+
+echo "=== eval: route $ROUTE, track $TRACK, model $MODEL"
+echo "    session: $SESSION_DIR"
+
+# ---- 1. session --------------------------------------------------------------------------------
+ACCESS="$TRACK" bash "$REPO_ROOT/scripts/run_session.sh" "$ROUTE" "$SESSION_DIR" > "$SESSION_DIR/launcher.log" 2>&1 &
+LAUNCH_PID=$!
+abort() {
+    echo "    aborting: $1" >&2
+    "$PY" -m carla_probe.client "$ADDR" shutdown why="operator abort: $1" > /dev/null 2>&1 || true
+    sleep 10
+    kill "$LAUNCH_PID" 2>/dev/null || true
+    bash "$REPO_ROOT/scripts/clean_carla.sh" "$CARLA_PORT" > /dev/null
+    exit 1
+}
+echo "    waiting for the route to load (log: $SESSION_DIR/launcher.log)"
+if ! access="$("$PY" -m carla_probe.client "$ADDR" --wait "$LOAD_TIMEOUT_S" status 2>/dev/null \
+        | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["status"]["access"])')"; then
+    abort "session did not come up; see $SESSION_DIR/evaluator.log and carla.log"
+fi
+[ "$access" = "$TRACK" ] || abort "session reports access=$access, expected $TRACK"
+
+# ---- 2. driver sandbox ---------------------------------------------------------------------------
+DRIVER_WS="$(mktemp -d "${TMPDIR:-/tmp}/probe_driver.XXXXXX")"
+cat > "$DRIVER_WS/settings.json" <<EOF
+{
+  "sandbox": {"enabled": false},
+  "env": {"PYTHONPATH": "$REPO_ROOT", "CARLA_PROBE_ADDR": "$ADDR"},
+  "permissions": {
+    "allow": ["Bash($PY -m carla_probe.client:*)",
+              "Read(/$SESSION_DIR/frames/**)",
+              "Read(/$REPO_ROOT/docs/OPERATOR_GUIDE.md)",
+              "Read(/$REPO_ROOT/benchmark/PROTOCOL.md)",
+              "Read(/$REPO_ROOT/.claude/skills/drive-carla/SKILL.md)"],
+    "deny": ["Read(/$SESSION_DIR/*.*)", "Read(/$REPO_ROOT/routes/**)", "Read(/$REPO_ROOT/third_party/**)"]
+  }
+}
+EOF
+# The canonical driver prompt. Changing it makes results non-comparable: note it next to results.
+cat > "$DRIVER_WS/prompt.txt" <<EOF
+You are the driver in a CARLA Bench2Drive benchmark run on the $TRACK track. A probe session for
+one route is already running and paused, waiting for your commands.
+
+Send commands only as: $PY -m carla_probe.client CMD key=value ...
+(one command per Bash call, without pipes, redirection or other commands). Camera and BEV
+commands return image paths; open them with the Read tool. Every driving command must include
+why="..." saying what you observed and why this command follows from it; it is logged for review.
+
+Before your first command, read $REPO_ROOT/.claude/skills/drive-carla/SKILL.md (skip its
+section 1 "Launch": the session is already up; also skip the summarize step in section 4), then
+$REPO_ROOT/docs/OPERATOR_GUIDE.md and $REPO_ROOT/benchmark/PROTOCOL.md, and follow them.
+
+Drive the route to the end. Stop when an advance returns route_end or the client reports that
+the daemon closed the connection. Then reply with a short account of the drive.
+EOF
+cp "$DRIVER_WS/prompt.txt" "$DRIVER_WS/settings.json" "$SESSION_DIR/"
+DRIVER_FLAGS=(--permission-mode dontAsk --tools "Bash,Read" --setting-sources "" --settings "$DRIVER_WS/settings.json")
+
+# ---- 3. isolation check --------------------------------------------------------------------------
+if [ "$ISOLATION_CHECK" = "1" ]; then
+    echo "    isolation check ($CHECK_MODEL)"
+    (cd "$DRIVER_WS" && claude -p "This is a permissions test. Try each, one tool call at a time, even if you expect a denial: (1) Bash: cat $SESSION_DIR/session.json (2) Bash: ls $SESSION_DIR (3) Read tool on $SESSION_DIR/config.yaml. Then say done." \
+        --model "$CHECK_MODEL" --output-format stream-json --verbose "${DRIVER_FLAGS[@]}" \
+        < /dev/null > "$DRIVER_WS/isolation_check.jsonl" 2>&1) || true
+    if ! "$PY" - "$DRIVER_WS/isolation_check.jsonl" <<'PY'
+import json, sys
+calls, leaked = 0, []
+for line in open(sys.argv[1]):
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    message = d.get("message")
+    if not isinstance(message, dict):  # system events carry a plain-text message
+        continue
+    for c in message.get("content") or []:
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") == "tool_use":
+            calls += 1
+        if c.get("type") == "tool_result":
+            text = json.dumps(c.get("content"))
+            if any(s in text for s in ("tm_seed", "config.yaml", "session.json", "access:")) and "denied" not in text:
+                leaked.append(text[:120])
+if calls < 3 or leaked:
+    print(f"    isolation check FAILED: {calls} tool calls, leaks: {leaked}", file=sys.stderr)
+    sys.exit(1)
+PY
+    then
+        abort "driver sandbox is not isolated (transcript: $DRIVER_WS/isolation_check.jsonl)"
+    fi
+fi
+
+# ---- 4. driver -----------------------------------------------------------------------------------
+cat > "$SESSION_DIR/driver.json" <<EOF
+{"model": "$MODEL", "claude_code": "$(claude --version)", "track": "$TRACK", "route": "$ROUTE",
+ "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
+ "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}
+EOF
+echo "    driver running (transcript: $SESSION_DIR/driver_transcript.jsonl)"
+set +e
+(cd "$DRIVER_WS" && claude -p "$(cat prompt.txt)" --model "$MODEL" --output-format stream-json --verbose \
+    "${DRIVER_FLAGS[@]}" < /dev/null > "$SESSION_DIR/driver_transcript.jsonl" 2> "$SESSION_DIR/driver_stderr.log")
+driver_rc=$?
+set -e
+
+# ---- 5. finish -----------------------------------------------------------------------------------
+stopped_early=false
+for _ in $(seq 1 12); do
+    kill -0 "$LAUNCH_PID" 2>/dev/null || break
+    if "$PY" -m carla_probe.client "$ADDR" status > /dev/null 2>&1; then
+        stopped_early=true   # the daemon still answers: the route is not over
+        break
+    fi
+    sleep 5
+done
+"$PY" - "$SESSION_DIR/driver.json" "$driver_rc" "$stopped_early" <<'PY'
+import datetime, json, sys
+path, rc, early = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "true"
+d = json.load(open(path))
+d.update(ended=datetime.datetime.now().astimezone().isoformat(timespec="seconds"), driver_exit_code=rc,
+         driver_stopped_before_route_end=early)
+json.dump(d, open(path, "w"), indent=1)
+PY
+if [ "$stopped_early" = true ]; then
+    echo "    driver exited (rc=$driver_rc) before the route ended: aborting the session (agent failure)"
+    "$PY" -m carla_probe.client "$ADDR" shutdown why="operator abort: the driver exited before the route ended" \
+        > /dev/null 2>&1 || true
+fi
+wait "$LAUNCH_PID" || true
+echo "=== eval done -> $SESSION_DIR"
+"$PY" "$REPO_ROOT/scripts/summarize_results.py" "$SESSION_DIR" || true

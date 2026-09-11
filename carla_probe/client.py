@@ -9,9 +9,13 @@ Wait until a freshly launched session answers (CARLA + route load takes 1-3 min)
 
 HOST:PORT defaults to $CARLA_PROBE_ADDR, else 127.0.0.1:8790. Values are parsed as JSON when
 possible (numbers, lists, null, booleans), else kept as strings:
-    python -m carla_probe.client tick n=40
-    python -m carla_probe.client run_until_event event=stopped
-    python -m carla_probe.client apply_plan 'waypoints=[[3,0],[6,0],[9,0],[12,0]]' target_speed=5 ticks=40
+    python -m carla_probe.client tick n=40 why="junction clear both ways; keep the current plan"
+    python -m carla_probe.client run_until_event event=stopped why="car stopped ahead; brake to a stop"
+    python -m carla_probe.client apply_plan 'waypoints=[[3,0],[6,0],[9,0],[12,0]]' target_speed=5 ticks=40 \
+        why="lane ahead clear for 40 m; follow it at 5 m/s"
+
+Driving commands (apply_plan, set_control, hold, tick, run_until_*, shutdown) need why="..." when the
+session's config has require_justification: true (the default).
 
 Each command prints exactly one JSON response. Time-advancing commands block until the sim pauses
 again: that wait IS the sim running. Interrupting abandons the reply, not the advance (the daemon

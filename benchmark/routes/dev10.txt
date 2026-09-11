@@ -1,12 +1,12 @@
 # Bench2Drive dev10 split (leaderboard/data/drivetransformer_bench2drive_dev10.xml): 10 routes,
 # 7 of which need the Town11-15 additional maps.
-3514   # Town13  ParkingExit
-3255   # Town13  ParkingCrossingPedestrian
-26405  # Town15  StaticCutIn
-25381  # Town05  HazardAtSideLane
-25378  # Town03  YieldToEmergencyVehicle
-25424  # Town11  ConstructionObstacleTwoWays
-2091   # Town12  NonSignalizedJunctionLeftTurn
-27494  # Town04  BlockedIntersection
-17569  # Town12  SequentialLaneChange
-28198  # Town15  SignalizedJunctionLeftTurnEnterFlow
+3514   # Town13
+3255   # Town13
+26405  # Town15
+25381  # Town05
+25378  # Town03
+25424  # Town11
+2091   # Town12
+27494  # Town04
+17569  # Town12
+28198  # Town15

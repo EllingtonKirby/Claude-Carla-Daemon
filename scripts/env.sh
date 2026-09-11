@@ -10,12 +10,17 @@
 #
 # Env overrides: CARLA_ROOT (default $HOME/carla), VENV_DIR (default <repo>/.venv).
 
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+if [ -n "${ZSH_VERSION:-}" ]; then
+    _probe_env_src="${(%):-%x}"   # zsh has no BASH_SOURCE (Claude Code's shell is often zsh)
+elif [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     echo "ERROR: source this script, do not execute it:  source ${0}" >&2
     exit 1
+else
+    _probe_env_src="${BASH_SOURCE[0]}"
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$_probe_env_src")/.." && pwd)"
+unset _probe_env_src
 export REPO_ROOT
 export CARLA_ROOT="${CARLA_ROOT:-$HOME/carla}"
 : "${VENV_DIR:=$REPO_ROOT/.venv}"

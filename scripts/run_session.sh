@@ -10,14 +10,18 @@
 #   python -m carla_probe.client --wait 600 status
 #
 # Blocks until the route ends. Artifacts land in SESSION_DIR (default sessions/<stamp>_route<id>/):
-#   result.json (leaderboard scores), commands.jsonl, trajectory.jsonl, evaluator.log, carla.log,
-#   frames/, camera_log/, config.yaml (snapshot), session.json (launch metadata).
+#   result.json (leaderboard scores), RouteScenario_<id>_rep0.log (CARLA recorder), commands.jsonl,
+#   decisions.jsonl/.txt, score_events.jsonl, trajectory.jsonl, evaluator.log, carla.log, frames/,
+#   camera_log/, config.yaml (snapshot), session.json (launch metadata). See docs/HANDOFF.md §5.
 #
 # Env: ACCESS (privileged | sensors; default = the config's `access`)
 #      CARLA_ROOT ($HOME/carla)  GPU_RANK (0)  CARLA_PORT (20000)  TM_PORT (CARLA_PORT+20000)
 #      TM_SEED (0)  PROBE_CONFIG (carla_probe/config.yaml)  PROBE_PORT / PROBE_HOST (from config)
 #      CARLA_EXTERNAL=1 to reuse an already-running CARLA server on CARLA_PORT
 #      AGENT_MAX_TICKS (4000 = the stock 200 s route budget; changing it makes scores non-standard)
+#      SIM_RECORD (1): CARLA recorder log of the whole simulation into SESSION_DIR (replay with
+#        scripts/replay_sim.py); 0 turns it off
+#      RECORD_CAMERA_EVERY (config value): log the record.camera_id frame every N ticks to camera_log/
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -64,11 +68,19 @@ if [ -n "${ACCESS:-}" ]; then
         *) echo "ERROR: ACCESS must be privileged or sensors, got '$ACCESS'" >&2; exit 1 ;;
     esac
 fi
+if [ -n "${RECORD_CAMERA_EVERY:-}" ]; then
+    [[ "$RECORD_CAMERA_EVERY" =~ ^[0-9]+$ ]] || { echo "ERROR: RECORD_CAMERA_EVERY must be a tick count" >&2; exit 1; }
+    sed -i -E "s/^(\s*camera_every_n_ticks:)\s*[0-9]+/\1 $RECORD_CAMERA_EVERY/" "$SESSION_DIR/config.yaml"
+fi
+: "${SIM_RECORD:=1}"
+RECORD_ARGS=()
+[ "$SIM_RECORD" = "1" ] && RECORD_ARGS=(--record="$SESSION_DIR")
 ACCESS_EFFECTIVE="$(awk '/^access:/{print $2}' "$SESSION_DIR/config.yaml")"
 PROBE_ADDR="${PROBE_HOST:-$(awk '/^host:/{print $2}' "$PROBE_CONFIG")}:${PROBE_PORT:-$(awk '/^port:/{print $2}' "$PROBE_CONFIG")}"
 cat > "$SESSION_DIR/session.json" <<EOF
 {"routes": "$ROUTES", "access": "$ACCESS_EFFECTIVE", "tm_seed": $TM_SEED, "carla_port": $CARLA_PORT, "probe_addr": "$PROBE_ADDR",
- "max_ticks": ${AGENT_MAX_TICKS:-4000}, "started": "$(date -Iseconds)",
+ "max_ticks": ${AGENT_MAX_TICKS:-4000}, "sim_record": $SIM_RECORD,
+ "camera_every_n_ticks": $(awk '/^ *camera_every_n_ticks:/{print $2}' "$SESSION_DIR/config.yaml"), "started": "$(date -Iseconds)",
  "repo_commit": "$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"}
 EOF
 
@@ -81,13 +93,17 @@ echo "    connect:  python -m carla_probe.client $PROBE_ADDR --wait 600 status"
 CARLA_PID=""
 EVAL_PID=""
 cleanup() {
-    [ -n "$EVAL_PID" ] && kill -9 "$EVAL_PID" 2>/dev/null
+    # Every command is guarded: under `set -e` a failing kill here would make a successful session
+    # exit non-zero.
+    local rc=$?
+    if [ -n "$EVAL_PID" ]; then kill -9 "$EVAL_PID" 2>/dev/null || true; fi
     if [ -z "${CARLA_EXTERNAL:-}" ]; then
         # CarlaUE4.sh is a wrapper: kill the real binary by its unique RPC port too, or it keeps the GPU.
-        pkill -9 -f "carla-rpc-port=$CARLA_PORT" 2>/dev/null
-        [ -n "$CARLA_PID" ] && kill -9 "$CARLA_PID" 2>/dev/null
+        if [ -n "$CARLA_PID" ]; then disown "$CARLA_PID" 2>/dev/null || true; fi   # no "Killed" job notice
+        pkill -9 -f "carla-rpc-port=$CARLA_PORT" 2>/dev/null || true
+        if [ -n "$CARLA_PID" ]; then kill -9 "$CARLA_PID" 2>/dev/null || true; fi
     fi
-    return 0
+    exit "$rc"
 }
 trap cleanup EXIT
 
@@ -125,7 +141,7 @@ CUDA_VISIBLE_DEVICES="$GPU_RANK" python "$LEADERBOARD_ROOT/leaderboard/leaderboa
     --port="$CARLA_PORT" \
     --traffic-manager-port="$TM_PORT" \
     --traffic-manager-seed="$TM_SEED" \
-    --gpu-rank="$GPU_RANK" >"$SESSION_DIR/evaluator.log" 2>&1 &
+    --gpu-rank="$GPU_RANK" ${RECORD_ARGS[@]+"${RECORD_ARGS[@]}"} >"$SESSION_DIR/evaluator.log" 2>&1 &
 EVAL_PID=$!
 echo "    evaluator running (log: $SESSION_DIR/evaluator.log)"
 

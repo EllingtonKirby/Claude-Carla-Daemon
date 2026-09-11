@@ -44,6 +44,11 @@ collision_sensor: true
 # 1.0 = raw GNSS.
 gnss_position_gain: 0.2
 
+# Driving commands (apply_plan, set_control, hold, tick, run_until_*, shutdown) must carry why="..."
+# (what the driver observed and why this command follows). Accepted ones are logged with their outcome
+# to decisions.jsonl / decisions.txt, for reviewing whether decisions fit the scene. Both tracks.
+require_justification: true
+
 # apply_plan without target_speed: waypoints are this many seconds apart, so spacing encodes speed.
 plan_interval_s: 0.5
 

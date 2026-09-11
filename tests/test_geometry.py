@@ -63,6 +63,22 @@ def test_points_ahead_and_extrapolation():
     assert pts[1] == pytest.approx([22.0, 0.0])
 
 
+def test_route_heading():
+    route = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]])
+    assert g.route_heading_deg(route, 0) == pytest.approx(0.0)
+    assert g.route_heading_deg(route, 1) == pytest.approx(90.0)  # +y: CARLA yaw is clockwise
+
+
+def test_route_box_entry():
+    route = np.array([[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]])  # sparse: boxes lie mid-segment
+    assert g.route_box_entry_s(route, (50.0, 0.5), (2.0, 1.0), 0.0) == pytest.approx(48.0)
+    assert g.route_box_entry_s(route, (100.5, 30.0), (1.0, 3.0), 0.0) == pytest.approx(127.0)
+    assert g.route_box_entry_s(route, (50.0, 0.0), (2.0, 1.0), 49.0) == pytest.approx(49.0)  # inside now
+    assert g.route_box_entry_s(route, (50.0, 0.0), (2.0, 1.0), 60.0) is None                 # passed it
+    assert g.route_box_entry_s(route, (50.0, 3.5), (2.0, 1.5), 0.0) is None                  # next lane
+    assert g.route_box_entry_s(route, (-68.0, 2.7), (2.0, 3.0), 0.0) is None                 # behind start
+
+
 @pytest.mark.parametrize("ref", [(0.0, 0.0), (49.0, 8.4), (-33.9, 151.2)])
 @pytest.mark.parametrize("xy", [(0.0, 0.0), (1234.5, -987.6), (-4000.0, 5000.0)])
 def test_gnss_roundtrip_and_reference_solve(ref, xy):

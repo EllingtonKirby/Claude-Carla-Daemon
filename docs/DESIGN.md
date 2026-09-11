@@ -61,7 +61,12 @@ The ego pose is estimated:
 - **Route.** Projected through the same conversion, so route and ego share one frame.
 
 The hero actor is never queried, the collision sensor is never attached, and the live score is
-never computed. `render_bev` draws only route, route points, plan and a nominal ego box.
+never computed for a reply. `render_bev` draws only route, route points, plan and a nominal ego box.
+
+**Write-only analysis logs (both tracks).** `score_events.jsonl` reads the scenario's criteria every
+tick in sensors sessions too (`_scenario_events` → `_record_score_events`). Its output goes only to
+that file and never into a reply; `test_sensors_session` checks this. `decisions.jsonl` / `.txt`
+log the driver's own commands and justifications (`require_justification`).
 
 The original agent recovered the geo reference with `fsolve` on equations that carried a stray
 factor of `lat_ref`. The rewrite bisects the latitude equation (it involves `lat_ref` alone) and
@@ -69,7 +74,7 @@ solves longitude in closed form. It is round-trip-tested against the forward pro
 
 What enforcement cannot cover: the session directory still holds privileged files
 (`evaluator.log`, `result.json`). On the sensors track, reading them mid-run is forbidden by the
-benchmark protocol (rule 5), not blocked technically. In sensors sessions, `trajectory.jsonl` logs
+benchmark protocol (rule 6), not blocked technically. In sensors sessions, `trajectory.jsonl` logs
 the pose estimate, not ground truth.
 
 ## Frames
@@ -91,6 +96,7 @@ Applied to Bench2Drive 0.0.4 by `scripts/setup_bench2drive.sh`. It touches only 
 | | `agent.destroy(results)`; `agent.set_scenario(route_scenario)` | final record + live score |
 | | large-map load (Town12/13) done in async mode, sync restored afterwards | libcarla crash on some hosts when loading large maps in sync mode |
 | | world settings are not reset on exit | keeps a reused server in sync mode |
+| | with `--record`, writes `<route>_rep<i>.json` (world frame at recorder start, tick length) next to the recording | maps agent steps to replay time (`scripts/replay_sim.py`) |
 | `scenario_manager.py` | `AGENT_MAX_TICKS` env (default 4000) | analysis runs only; the benchmark uses the default |
 | `route_scenario.py` | `AGENT_BLOCKED_MIN_SPEED` / `AGENT_BLOCKED_MAX_TIME` env (defaults 0.1 m/s, 60 s) | analysis runs only |
 | `atomic_behaviors.py` | `AGENT_SCENARIO_TIMEOUT` env cap (unset = stock) | analysis runs only |
@@ -110,6 +116,18 @@ With those variables unset, scoring semantics are stock Bench2Drive.
   sustained contact into one event.
 - **Maps.** 7 of the dev10 routes need the Town11–15 additional maps (`setup_carla.sh` installs
   them). Some installs lack Town14.
+- **No reverse.** Controls are steer / throttle / brake only, so an ego stopped nose-first against a
+  wall, fence or vehicle cannot back out.
+- **The privileged scene has no static layout.** Fences, poles, walls and curbs are not in
+  `observe`, `get_state` or the BEV, and junction polygons only approximate the paved area. At
+  junction corners, check the cameras.
+- **BEV lane coverage.** Lanes are expanded through Driving lanes only, so a carriageway beyond a
+  median is not drawn (its vehicles still are).
+- **Throughput.** Every camera renders every tick, so the camera set dominates sim speed: with the
+  4 default cameras a session runs well below real time. Fewer or smaller cameras run faster, but
+  change the benchmark config.
+- **Replay weather.** CARLA's recorder does not store weather; `replay_sim.py` applies the route's
+  start weather, so routes whose weather changes along the way replay with the start weather.
 - **No authentication** on the socket. Bind to localhost unless the network is trusted.
 
 ## Provenance

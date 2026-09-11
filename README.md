@@ -41,11 +41,13 @@ ACCESS=sensors bash scripts/run_session.sh 25378 &   # smoke route; 2091 is the 
 python -m carla_probe.client --wait 600 status       # waits for CARLA + route load
 python -m carla_probe.client observe
 python -m carla_probe.client get_camera cams='["CAM_FRONT"]'   # prints a JPG path
-python -m carla_probe.client apply_plan 'waypoints=[[4,0],[8,0],[12,0],[16,0],[20,0]]' target_speed=6 ticks=40
+python -m carla_probe.client apply_plan 'waypoints=[[4,0],[8,0],[12,0],[16,0],[20,0]]' target_speed=6 ticks=40 \
+    why="lane ahead is clear; follow it at 6 m/s"      # every driving command carries a justification
 ```
 
-When the route ends, the session directory (`sessions/<stamp>_route_<id>/`) holds `result.json`
-and the full command log:
+When the route ends, the session directory (`sessions/<stamp>_route_<id>/`) holds `result.json`,
+a replayable CARLA recording, timed scoring events, the decision log with every justification, and the
+full command log (`docs/HANDOFF.md` §5):
 
 ```bash
 python scripts/summarize_results.py sessions/*
@@ -53,16 +55,21 @@ python scripts/summarize_results.py sessions/*
 
 ## Letting Claude drive
 
-Open Claude Code in this repo and ask it to drive a route. For example, "Run the standard
-benchmark route and drive it." The `drive-carla` skill (`.claude/skills/drive-carla/SKILL.md`)
-covers the launch, the observe → plan → advance loop, and the rules in
-[`benchmark/PROTOCOL.md`](benchmark/PROTOCOL.md).
+**Benchmark runs** use an isolated, headless driver that can't read logs or scores:
+
+```bash
+bash scripts/run_eval.sh 2091 sensors claude-opus-5   # route, track, model; see docs/HANDOFF.md §4
+```
+
+**Interactive runs:** open Claude Code in this repo and ask it to drive a route. The `drive-carla`
+skill (`.claude/skills/drive-carla/SKILL.md`) covers the launch, the observe → plan → advance loop,
+and the rules in [`benchmark/PROTOCOL.md`](benchmark/PROTOCOL.md). That driver is not isolated, so
+don't count its runs as benchmark results.
 
 ## Docs
 
-- [`docs/FIRST_LIVE_RUN.md`](docs/FIRST_LIVE_RUN.md): **start here on a new GPU machine**. The code
-  has not yet been validated against a live CARLA; this is the step-by-step checklist with pass
-  criteria.
+- [`docs/HANDOFF.md`](docs/HANDOFF.md): **start here.** Purpose, setup, install validation,
+  running an isolated eval (`scripts/run_eval.sh`), what a run records, troubleshooting.
 - [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md): commands, frames, driving technique, lessons
 - [`docs/DESIGN.md`](docs/DESIGN.md): how the pause works, the Bench2Drive patch, limitations
 - [`benchmark/PROTOCOL.md`](benchmark/PROTOCOL.md): route sets, rules, reporting
@@ -71,8 +78,8 @@ covers the launch, the observe → plan → advance loop, and the rules in
 
 ```
 carla_probe/        agent.py (leaderboard agent) server.py client.py geometry.py pid.py bev.py config.yaml
-scripts/            setup_carla.sh setup_bench2drive.sh env.sh run_session.sh clean_carla.sh
-                    summarize_results.py make_video.py split_routes.py
+scripts/            setup_carla.sh setup_bench2drive.sh env.sh run_session.sh run_eval.sh clean_carla.sh
+                    summarize_results.py replay_sim.py make_video.py split_routes.py
 patches/            the Bench2Drive leaderboard patch
 benchmark/          route sets + protocol
 tests/              offline unit tests

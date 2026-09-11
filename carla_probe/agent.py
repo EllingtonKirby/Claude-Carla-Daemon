@@ -31,7 +31,7 @@ import os
 import sys
 import time
 import traceback
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -56,6 +56,8 @@ _PARKED_LABELS = ("Car", "Truck", "Bus", "Motorcycle", "Bicycle")
 _LANE_OPTIONS = ("LANEFOLLOW", "VOID")
 # Nominal ego footprint (Bench2Drive's ego is always a Lincoln MKZ 2020): drawn in sensors-only BEVs.
 _EGO_HALF_LEN, _EGO_HALF_WID = 2.45, 1.05
+# RunningStopTest.point_inside_boundingbox scales stop trigger volumes by this: mirrored, not tuned.
+_STOP_BOX_MULTIPLIER = 1.2
 
 HELP: Dict[str, str] = {
     "status": "session summary (also attached to every reply)",
@@ -75,8 +77,13 @@ HELP: Dict[str, str] = {
     "hold [ticks]": "brake; with ticks, also advance",
     "record on [every]": "toggle camera frame logging to camera_log/ (for scripts/make_video.py)",
     "shutdown": "abort the route (scored as an agent failure)",
+    "why": "justification string, REQUIRED on every driving command (apply_plan, set_control, hold, tick, "
+           "run_until_*, shutdown): what you observed and why this command follows from it",
 }
 _PRIVILEGED_EVENTS = ("collision", "infraction")
+# Commands that decide what the ego does. With require_justification they must carry why="...", and
+# every accepted one is logged to decisions.jsonl / decisions.txt with its outcome.
+_DRIVING_COMMANDS = ("apply_plan", "set_control", "hold", "tick", "run_until_frame", "run_until_event", "shutdown")
 _ADVANCE_EVENTS = ("stopped", "plan_done") + _PRIVILEGED_EVENTS
 
 
@@ -98,6 +105,24 @@ def _rot(r) -> List[float]:
 
 def _r(x: float, nd: int = 2) -> float:
     return round(float(x), nd)
+
+
+def _event_key(ev: Dict[str, Any]) -> Tuple[Any, ...]:
+    return ev["type"], ev["frame"], ev["message"]
+
+
+def _new_events(events: List[Dict[str, Any]], already: "Counter[Tuple[Any, ...]]") -> List[Dict[str, Any]]:
+    """Events not accounted for by ``already``. Criteria events are concatenated per criterion, so a
+    new event can land BEFORE older ones: diff by identity, not by index."""
+    seen = Counter(already)
+    new = []
+    for ev in events:
+        key = _event_key(ev)
+        if seen[key] > 0:
+            seen[key] -= 1
+        else:
+            new.append(ev)
+    return new
 
 
 def _resolve_config_path(raw: str) -> str:
@@ -139,12 +164,17 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._record_cam_id = str(cfg["record"]["camera_id"])
         self._record_every = int(cfg["record"]["camera_every_n_ticks"])
         self._cameras = [dict(c) for c in cfg["cameras"]]
+        self._require_why = bool(cfg["require_justification"])
         self.pid = PIDController(cfg["pid"])
         # The stock route budget; the patched leaderboard reads the same variable (docs/DESIGN.md).
         self._max_ticks = int(os.environ.get("AGENT_MAX_TICKS", "4000"))
 
         self.step = -1
         self._sim_time = 0.0
+        self._frame = -1
+        self._decision_i = 0
+        self._pending_decision: Optional[int] = None
+        self._logged_events: "Counter[Tuple[Any, ...]]" = Counter()
         self._ego: Optional[Dict[str, float]] = None
         self._last_input: Optional[dict] = None
         self._mode = "hold"
@@ -164,9 +194,15 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._route_idx, self._route_s, self._route_lat = 0, 0.0, 0.0
         self._lat_ref, self._lon_ref = 0.0, 0.0
         self._last_t: Optional[float] = None
+        if getattr(self, "_dense_world_plan", None) is not None:
+            self._build_route()
 
         self._cmd_log = open(self._out / "commands.jsonl", "a")
         self._traj_log = open(self._out / "trajectory.jsonl", "a") if self._record_traj else None
+        self._decisions_jsonl = open(self._out / "decisions.jsonl", "a")
+        self._decisions_txt = open(self._out / "decisions.txt", "a")
+        # Analysis only, both access levels: never read back into a reply (see _record_score_events).
+        self._score_log = open(self._out / "score_events.jsonl", "a")
         host = os.environ.get("PROBE_HOST", str(cfg["host"]))
         port = int(os.environ.get("PROBE_PORT", cfg["port"]))
         self._server = CommandServer(host, port)
@@ -190,7 +226,14 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         return specs
 
     def set_global_plan(self, global_plan_gps, global_plan_world_coord) -> None:
+        # Bench2Drive's evaluator calls this BEFORE setup (the access level is not known yet), so the
+        # route is built by whichever of the two runs last.
         super().set_global_plan(global_plan_gps, global_plan_world_coord)
+        self._dense_world_plan = global_plan_world_coord
+        if hasattr(self, "_access"):
+            self._build_route()
+
+    def _build_route(self) -> None:
         pts: List[Tuple[float, float]] = []
         opts: List[str] = []
         if self._sensors_only:
@@ -204,7 +247,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             source = [(geo.gps_to_world(g["lat"], g["lon"], self._lat_ref, self._lon_ref), o) for g, o in self._global_plan]
         else:
             # Privileged: the DENSE world-coordinate route (the base class keeps a 50 m downsample).
-            source = [((float(t.location.x), float(t.location.y)), o) for t, o in global_plan_world_coord]
+            source = [((float(t.location.x), float(t.location.y)), o) for t, o in self._dense_world_plan]
         for p, option in source:
             if pts and math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) < 0.05:
                 continue
@@ -225,20 +268,26 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         if getattr(self, "_advance", None) is not None and server is not None:
             self._finish_advance("route_end")
         try:
+            if getattr(self, "_score_log", None) is not None:
+                self._record_score_events()  # events the criteria added while terminating
+        except Exception as e:
+            print(f"[PROBE] could not record final score events: {e!r}", flush=True)
+        try:
             done = {"t_wall": time.time(), "status": self._status() if getattr(self, "_ego", None) else None,
                     "record": results.to_json() if hasattr(results, "to_json") else None}
             (self._out / "probe_done.json").write_text(json.dumps(done, indent=2, default=str))
         except Exception as e:  # never mask the evaluator's own teardown
             print(f"[PROBE] could not write probe_done.json: {e!r}", flush=True)
         sensor = getattr(self, "_collision_sensor", None)
-        if sensor is not None:
+        if sensor is not None and sensor.is_alive:  # the evaluator's cleanup may have destroyed it already
             try:
                 sensor.stop()
                 sensor.destroy()
             except RuntimeError:
                 pass
             self._collision_sensor = None
-        for f in (getattr(self, "_cmd_log", None), getattr(self, "_traj_log", None)):
+        for f in (getattr(self, "_cmd_log", None), getattr(self, "_traj_log", None), getattr(self, "_decisions_jsonl", None),
+                  getattr(self, "_decisions_txt", None), getattr(self, "_score_log", None)):
             if f is not None:
                 f.close()
         if server is not None:
@@ -249,7 +298,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self.step += 1
         self._sim_time = float(timestamp)
         self._last_input = input_data
+        self._frame = int(input_data["SPEED"][0])  # the CARLA frame this tick's sensor data belongs to
         speed = float(input_data["SPEED"][1]["speed"])
+        self._record_score_events()
         if self._sensors_only:
             self._ego = self._estimate_pose(input_data, speed)
         else:
@@ -276,10 +327,13 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             try:
                 reply = self._dispatch(cmd)
             except _ShutdownRequested:
-                self._log({"cmd": "shutdown", "advancing": False, "ok": True})
+                self._log_decision(cmd, {"reason": "shutdown"})
+                self._log({**cmd, "advancing": False, "ok": True})
                 raise RuntimeError("probe shutdown requested by client (route scored as an agent failure)")
             except Exception:
                 reply = {"ok": False, "error": traceback.format_exc(limit=5)}
+            if cmd.get("cmd") in _DRIVING_COMMANDS and (reply is None or reply.get("ok")):
+                self._log_decision(cmd, None if reply is None else reply.get("result", {"mode": self._mode}))
             self._log({**cmd, "advancing": reply is None, "ok": None if reply is None else bool(reply.get("ok"))})
             if reply is not None:
                 reply.setdefault("status", self._status())
@@ -308,7 +362,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             "kind": kind,
             "ticks": 0,
             "coll0": len(self._collisions),
-            "inf0": self._infraction_count(),
+            "inf0": Counter(_event_key(ev) for ev in self._infraction_events()),
             "stop_on_collision": bool(cmd.get("stop_on_collision", False)),
             **extra,
         }
@@ -329,7 +383,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             return "collision"
         if event == "stopped" and self._stopped_run >= self._stopped_min_ticks:
             return "stopped"
-        if event == "infraction" and self._infraction_count() > a["inf0"]:
+        if event == "infraction" and len(self._infraction_events()) > sum(a["inf0"].values()):
             return "infraction"
         if event == "plan_done" and (self._mode != "plan" or self._plan_done):
             return "plan_done"
@@ -342,8 +396,11 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         if not self._sensors_only:
             score = self._live_score(detail=True)
             result["collisions_during"] = self._collisions[a["coll0"]:]
-            result["new_infractions"] = score["events"][a["inf0"]:] if score else []
+            result["new_infractions"] = _new_events(score["events"] if score else [], a["inf0"])
         self._server.send({"ok": True, "result": result, "status": self._status()})
+        if self._pending_decision is not None:
+            self._write_decision_result(self._pending_decision, {"reason": reason, "ticks_advanced": a["ticks"]})
+            self._pending_decision = None
         self._log({"event": "advance_done", "reason": reason, "ticks": a["ticks"]})
         self._advance = None
 
@@ -367,6 +424,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         denied = self._denied(name, cmd)
         if denied is not None:
             return {"ok": False, "error": f"{denied} needs privileged access; this session is access=sensors"}
+        if name in _DRIVING_COMMANDS and self._require_why and not str(cmd.get("why") or "").strip():
+            return {"ok": False, "error": f'{name} needs why="...": what you observed and why this command follows '
+                                          "from it (every driving command is logged with its justification)"}
         if name == "status":
             return {"ok": True}
         if name == "help":
@@ -476,18 +536,36 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             self._route, (self._ego["x"], self._ego["y"]), hint_idx=self._route_idx, window=self._route_window
         )
 
-    def _route_ahead_distance(self, xy: Tuple[float, float], max_lateral_m: float) -> Optional[float]:
-        """Arclength from the ego to ``xy`` along the route, if ``xy`` lies on the route ahead."""
+    def _route_ahead_distance(self, xy: Tuple[float, float], yaw_deg: float, max_offset_m: float) -> Optional[float]:
+        """Arclength from the ego to ``xy`` along the route, if ``xy`` lies on the route ahead within
+        ``max_offset_m`` (true distance, so points beyond either route end don't count) and its lane
+        heading ``yaw_deg`` runs the same way as the route."""
         if self._route is None:
             return None
-        _seg, s, lat = geo.project_on_route(self._route, xy, hint_idx=self._route_idx, window=self._route_window)
+        seg, s, _lat = geo.project_on_route(self._route, xy, hint_idx=self._route_idx, window=self._route_window)
         ahead = s - self._route_s
-        return _r(ahead, 1) if abs(lat) <= max_lateral_m and ahead >= -1.0 else None
+        on_route = geo.point_at_arclength(self._route, s)
+        if math.hypot(on_route[0] - xy[0], on_route[1] - xy[1]) > max_offset_m or ahead < -1.0:
+            return None
+        if abs(geo.wrap_deg(yaw_deg - geo.route_heading_deg(self._route, seg))) > 90.0:
+            return None
+        return _r(ahead, 1)
 
-    def _live_score(self, detail: bool) -> Optional[Dict[str, Any]]:
-        """Mirror of the leaderboard's compute_route_statistics on the live criteria. An estimate:
-        result.json (written at route end) is authoritative. Never available with sensors access."""
-        if self._sensors_only or self._scenario is None:
+    def _route_stop_ahead(self, center: Tuple[float, float], extent: Tuple[float, float]) -> Optional[float]:
+        """Arclength from the ego to where the route enters a stop sign's trigger box, the way
+        RunningStopTest decides a stop applies (world axis-aligned box, extent x1.2)."""
+        if self._route is None:
+            return None
+        half = (_STOP_BOX_MULTIPLIER * extent[0], _STOP_BOX_MULTIPLIER * extent[1])
+        s = geo.route_box_entry_s(self._route, center, half, self._route_s - 1.0,
+                                  hint_idx=self._route_idx, window=self._route_window)
+        return None if s is None else _r(max(s - self._route_s, 0.0), 1)
+
+    def _scenario_events(self) -> Optional[Tuple[float, float, List[Dict[str, Any]]]]:
+        """(route_completed, penalty, events) from the running scenario's criteria, mirroring the
+        leaderboard's compute_route_statistics; None before set_scenario. Access-agnostic ON PURPOSE:
+        in sensors sessions its output may only go to the write-only score_events.jsonl."""
+        if self._scenario is None:
             return None
         try:
             from leaderboard.utils.statistics_manager import PENALTY_NAME_DICT, PENALTY_PERC_DICT, PENALTY_VALUE_DICT
@@ -514,6 +592,17 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
                         penalty *= 1 - (1 - value) * pct / 100
                 events.append({"type": PENALTY_NAME_DICT.get(etype, getattr(etype, "name", str(etype))),
                                "frame": ev.get_frame(), "message": ev.get_message()})
+        return route_completed, penalty, events
+
+    def _live_score(self, detail: bool) -> Optional[Dict[str, Any]]:
+        """The live score estimate for replies; result.json (written at route end) is authoritative.
+        Never available with sensors access."""
+        if self._sensors_only:
+            return None
+        scenario_events = self._scenario_events()
+        if scenario_events is None:
+            return None
+        route_completed, penalty, events = scenario_events
         counts: Dict[str, int] = {}
         for ev in events:
             counts[ev["type"]] = counts.get(ev["type"], 0) + 1
@@ -527,9 +616,50 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             out["events"] = events
         return out
 
-    def _infraction_count(self) -> int:
+    def _record_score_events(self) -> None:
+        """Append criteria events that appeared since the last tick to score_events.jsonl, with the
+        step and CARLA frame at which the daemon saw them (the event's own ``frame`` is exact).
+        Both access levels; write-only, never read back into a reply."""
+        scenario_events = self._scenario_events()
+        if scenario_events is None:
+            return
+        for ev in _new_events(scenario_events[2], self._logged_events):
+            self._logged_events[_event_key(ev)] += 1
+            self._score_log.write(json.dumps({"step": self.step, "t": _r(self._sim_time, 2), "frame_seen": self._frame,
+                                              **ev}, default=str) + "\n")
+        self._score_log.flush()
+
+    def _log_decision(self, cmd: Dict[str, Any], result: Optional[Dict[str, Any]]) -> None:
+        """Log an accepted driving command with its justification; ``result`` None = pending advance."""
+        self._decision_i += 1
+        i = self._decision_i
+        name = str(cmd.get("cmd"))
+        args = {k: v for k, v in cmd.items() if k not in ("cmd", "why")}
+        why = str(cmd.get("why") or "").strip()
+        self._decisions_jsonl.write(json.dumps({"i": i, "step": self.step, "t": _r(self._sim_time, 2), "frame": self._frame,
+                                                "cmd": name, "args": args, "why": why}) + "\n")
+        arg_text = " ".join(f"{k}={json.dumps(v)}" for k, v in args.items())
+        self._decisions_txt.write(f"[{i}] step {self.step} (t={self._sim_time:.2f} s, frame {self._frame}): {name} {arg_text}\n"
+                                  f"    why: {why or '(none given)'}\n")
+        if result is None:
+            self._pending_decision = i
+        else:
+            self._write_decision_result(i, result)
+        self._decisions_jsonl.flush()
+        self._decisions_txt.flush()
+
+    def _write_decision_result(self, i: int, result: Dict[str, Any]) -> None:
+        e = self._ego or {}
+        self._decisions_jsonl.write(json.dumps({"i": i, "result": result, "step": self.step, "t": _r(self._sim_time, 2),
+                                                "frame": self._frame, "speed_mps": _r(e.get("speed", 0.0))}) + "\n")
+        outcome = ", ".join(f"{k}={v}" for k, v in result.items())
+        self._decisions_txt.write(f"    -> {outcome}; now step {self.step}, speed {e.get('speed', 0.0):.2f} m/s\n")
+        self._decisions_jsonl.flush()
+        self._decisions_txt.flush()
+
+    def _infraction_events(self) -> List[Dict[str, Any]]:
         score = self._live_score(detail=True)
-        return len(score["events"]) if score else 0
+        return score["events"] if score else []
 
     # ------------------------------------------------------------------ inspection (both levels)
     def _status(self) -> Dict[str, Any]:
@@ -716,7 +846,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
 
     def _parked_vehicles(self, radius: float, actors: List[Dict[str, Any]]) -> List[Tuple[float, float, float, float, float]]:
         """Level (map-baked) vehicle boxes near the ego as (fwd, left, yaw_rel_ccw_deg, half_len, half_wid).
-        Boxes that coincide with a live actor (or the ego) are dropped."""
+        get_level_bbs also returns spawned actors, so boxes that coincide with a live actor (or the
+        ego) are dropped. The radius is 3D like _actors', which drops scenario actors parked
+        underground (z ~ -500) before they trigger."""
         world = CarlaDataProvider.get_world()
         hero_loc = self.hero_actor.get_location()
         live = np.array([[a["loc"][0], a["loc"][1]] for a in actors] + [[hero_loc.x, hero_loc.y]])
@@ -731,7 +863,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
                 continue
             for bb in boxes:
                 loc = bb.location
-                if math.hypot(loc.x - hero_loc.x, loc.y - hero_loc.y) > radius:
+                if loc.distance(hero_loc) > radius:
                     continue
                 if np.min(np.hypot(live[:, 0] - loc.x, live[:, 1] - loc.y)) < 1.5:
                     continue
@@ -756,7 +888,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             stop_line, on_route = None, None
             for swp in tl.get_stop_waypoints():
                 sl = swp.transform.location
-                ahead = self._route_ahead_distance((sl.x, sl.y), max_lateral_m=2.5)
+                ahead = self._route_ahead_distance((sl.x, sl.y), swp.transform.rotation.yaw, max_offset_m=2.5)
                 if ahead is not None and (on_route is None or ahead < on_route):
                     on_route = ahead
                     stop_line = [_r(v, 1) for v in self._ego_frame(sl.x, sl.y)]
@@ -781,13 +913,14 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             if dist > radius:
                 continue
             trigger = tf.transform(sign.trigger_volume.location)
+            ext = sign.trigger_volume.extent
             fwd, left = self._ego_frame(tf.location.x, tf.location.y)
             out.append({
                 "id": int(sign.id),
                 "distance_m": _r(dist, 1),
                 "ego": {"fwd": _r(fwd, 1), "left": _r(left, 1)},
                 "trigger_ego": [_r(v, 1) for v in self._ego_frame(trigger.x, trigger.y)],
-                "trigger_on_route_ahead_m": self._route_ahead_distance((trigger.x, trigger.y), max_lateral_m=4.0),
+                "trigger_on_route_ahead_m": self._route_stop_ahead((trigger.x, trigger.y), (ext.x, ext.y)),
             })
         return sorted(out, key=lambda s: s["distance_m"])
 
@@ -968,7 +1101,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         e = self._ego
         if self._traj_log is not None:
             self._traj_log.write(json.dumps({
-                "step": self.step, "t": _r(self._sim_time, 2), "x": _r(e["x"], 3), "y": _r(e["y"], 3),
+                "step": self.step, "t": _r(self._sim_time, 2), "frame": self._frame, "x": _r(e["x"], 3), "y": _r(e["y"], 3),
                 "yaw": _r(e["yaw"], 2), "speed": _r(e["speed"], 3), "mode": self._mode,
                 "pose": "gnss_estimate" if self._sensors_only else "ground_truth", **self._last_control,
             }) + "\n")

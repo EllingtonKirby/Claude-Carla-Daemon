@@ -122,6 +122,45 @@ def route_points_ahead(route_xy: np.ndarray, s0: float, distances: Sequence[floa
     return np.stack([point_at_arclength(route_xy, s0 + float(d)) for d in distances], axis=0)
 
 
+def route_heading_deg(route_xy: np.ndarray, seg: int) -> float:
+    """CARLA world yaw (degrees) of route segment ``seg``."""
+    r = np.asarray(route_xy, dtype=np.float64)
+    d = r[seg + 1] - r[seg]
+    return math.degrees(math.atan2(d[1], d[0]))
+
+
+def route_box_entry_s(route_xy: np.ndarray, center_xy: Sequence[float], half_xy: Sequence[float], s_min: float,
+                      hint_idx: int = 0, window: int = -1) -> Optional[float]:
+    """Arclength at which the route, from ``s_min`` on, is inside a world axis-aligned box, or None.
+
+    Segments are clipped against the box (so a sparse route cannot step over a small box); if the
+    route at ``s_min`` is already inside, returns ``s_min``. Searches the same segment range as
+    :func:`project_on_route`.
+    """
+    r = np.asarray(route_xy, dtype=np.float64)
+    cum = cumulative_arclength(r)
+    lo_b = np.asarray(center_xy, dtype=np.float64)[:2] - np.abs(np.asarray(half_xy, dtype=np.float64)[:2])
+    hi_b = np.asarray(center_xy, dtype=np.float64)[:2] + np.abs(np.asarray(half_xy, dtype=np.float64)[:2])
+    lo = max(0, hint_idx - 10)
+    hi = len(r) - 1 if window < 0 else min(len(r) - 1, hint_idx + window)
+    for i in range(lo, hi):
+        if cum[i + 1] < s_min:
+            continue
+        a, d = r[i], r[i + 1] - r[i]
+        t0, t1 = 0.0, 1.0
+        for k in range(2):  # Liang-Barsky clip, one axis at a time
+            if abs(d[k]) < 1e-12:
+                if not lo_b[k] <= a[k] <= hi_b[k]:
+                    t0, t1 = 1.0, 0.0
+            else:
+                ta, tb = (lo_b[k] - a[k]) / d[k], (hi_b[k] - a[k]) / d[k]
+                t0, t1 = max(t0, min(ta, tb)), min(t1, max(ta, tb))
+        seg_len = cum[i + 1] - cum[i]
+        if t0 <= t1 and cum[i] + t1 * seg_len >= s_min:
+            return float(max(cum[i] + t0 * seg_len, s_min))
+    return None
+
+
 # ------------------------------------------------------------------------------------------------
 # GNSS / compass (sensors-only access). CARLA's GNSS sensor maps world <-> lat/lon with a Mercator
 # projection about the town's geo reference (carla/geom/GeoLocation.cpp); these are exact inverses.

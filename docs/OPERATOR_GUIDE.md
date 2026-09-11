@@ -49,6 +49,12 @@ Every reply carries `status`. An advancing command replies once, when the sim pa
 `result.reason` and `ticks_advanced` (privileged sessions add `collisions_during` and
 `new_infractions`). Items marked \* are privileged-only.
 
+**Every driving command** (`apply_plan`, `set_control`, `hold`, `tick`, `run_until_frame`,
+`run_until_event`, `shutdown`) **must include `why="..."`**: what you observed and why this command
+follows from it, in a sentence or two. A command without one is refused (`ok: false`) and changes
+nothing. Each accepted command is logged with its justification and outcome, so decisions can be
+reviewed against the scene after the run. Write the reason you actually acted on.
+
 | command | args | effect |
 |---|---|---|
 | `status` | | step, `ticks_left`, access, mode, speed, last control, route progress (+ speed limit, collision contacts and live score when privileged) |
@@ -143,7 +149,9 @@ Every reply carries `status`. An advancing command replies once, when the sim pa
 ## 10. Artifacts
 
 `SESSION_DIR/`: `result.json`, `session.json` (access, seed, commit), `commands.jsonl` (every command
-with wall time), `trajectory.jsonl` (per-tick pose and control; the GNSS estimate on the sensors
-track), `frames/`, `camera_log/`, `evaluator.log`, `carla.log`, `probe_done.json`.
+with wall time), `decisions.jsonl` / `decisions.txt` (your driving commands, justifications and
+outcomes), `trajectory.jsonl` (per-tick pose and control; the GNSS estimate on the sensors track),
+a CARLA recording of the whole simulation, `frames/`, `camera_log/`, `evaluator.log`, `carla.log`,
+`probe_done.json`.
 `python scripts/make_video.py SESSION_DIR` turns `camera_log/` into an mp4. On the sensors track,
-see `benchmark/PROTOCOL.md` rule 5 before opening any of these mid-run.
+see `benchmark/PROTOCOL.md` rule 6 before opening any of these mid-run.
