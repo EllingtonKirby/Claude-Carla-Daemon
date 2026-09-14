@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Split a multi-route leaderboard XML into one file per route.
 
-    python scripts/split_routes.py IN.xml OUT_DIR            # writes OUT_DIR/route_<id>.xml
-    python scripts/split_routes.py IN.xml --list             # print id, town, scenario types
+    python tools/split_routes.py IN.xml OUT_DIR            # writes OUT_DIR/route_<id>.xml
+    python tools/split_routes.py IN.xml --list             # print id, town, scenario types
 
 One evaluator process drives one route file, so probe sessions take single-route XMLs. Stdlib only.
 """

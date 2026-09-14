@@ -59,6 +59,6 @@ scenario fails the route).
 
 ## 4. Finish
 
-`python scripts/summarize_results.py <SESSION_DIR>`. Report the track, DS / RC / IS, status,
+`python tools/summarize_results.py <SESSION_DIR>`. Report the track, DS / RC / IS, status,
 infractions, commands and wall time, plus a short account of what went well and badly. If a CARLA
 process is left behind, run `bash scripts/clean_carla.sh <CARLA_PORT>`.

@@ -20,7 +20,7 @@
 #      CARLA_EXTERNAL=1 to reuse an already-running CARLA server on CARLA_PORT
 #      AGENT_MAX_TICKS (4000 = the stock 200 s route budget; changing it makes scores non-standard)
 #      SIM_RECORD (1): CARLA recorder log of the whole simulation into SESSION_DIR (replay with
-#        scripts/replay_sim.py); 0 turns it off
+#        tools/replay_sim.py); 0 turns it off
 #      RECORD_CAMERA_EVERY (config value): log the record.camera_id frame every N ticks to camera_log/
 set -euo pipefail
 
@@ -164,4 +164,4 @@ wait "$EVAL_PID" 2>/dev/null || true
 EVAL_PID=""
 
 echo "=== probe session ended -> $SESSION_DIR"
-python3 "$REPO_ROOT/scripts/summarize_results.py" "$SESSION_DIR" || true
+python3 "$REPO_ROOT/tools/summarize_results.py" "$SESSION_DIR" || true

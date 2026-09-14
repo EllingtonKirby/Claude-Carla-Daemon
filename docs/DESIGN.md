@@ -96,7 +96,7 @@ Applied to Bench2Drive 0.0.4 by `scripts/setup_bench2drive.sh`. It touches only 
 | | `agent.destroy(results)`; `agent.set_scenario(route_scenario)` | final record + live score |
 | | large-map load (Town12/13) done in async mode, sync restored afterwards | libcarla crash on some hosts when loading large maps in sync mode |
 | | world settings are not reset on exit | keeps a reused server in sync mode |
-| | with `--record`, writes `<route>_rep<i>.json` (world frame at recorder start, tick length) next to the recording | maps agent steps to replay time (`scripts/replay_sim.py`) |
+| | with `--record`, writes `<route>_rep<i>.json` (world frame at recorder start, tick length) next to the recording | maps agent steps to replay time (`tools/replay_sim.py`) |
 | `scenario_manager.py` | `AGENT_MAX_TICKS` env (default 4000) | analysis runs only; the benchmark uses the default |
 | `route_scenario.py` | `AGENT_BLOCKED_MIN_SPEED` / `AGENT_BLOCKED_MAX_TIME` env (defaults 0.1 m/s, 60 s) | analysis runs only |
 | `atomic_behaviors.py` | `AGENT_SCENARIO_TIMEOUT` env cap (unset = stock) | analysis runs only |

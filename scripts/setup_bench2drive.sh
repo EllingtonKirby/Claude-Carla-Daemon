@@ -31,6 +31,6 @@ else
     echo "$B2D_COMMIT + $(basename "$PATCH")" > "$DEST/.probe_patched"
 fi
 
-python3 "$REPO_ROOT/scripts/split_routes.py" \
+python3 "$REPO_ROOT/tools/split_routes.py" \
     "$DEST/leaderboard/data/bench2drive220.xml" "$REPO_ROOT/routes/bench2drive220"
 echo "done. Bench2Drive is CC BY-NC-ND 4.0 (non-commercial); its leaderboard/ and scenario_runner/ are MIT."

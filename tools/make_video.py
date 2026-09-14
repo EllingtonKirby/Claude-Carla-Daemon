@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build an mp4 from a session's recorded camera frames.
 
-    python scripts/make_video.py SESSION_DIR [--fps 10] [--out SESSION_DIR/drive.mp4]
+    python tools/make_video.py SESSION_DIR [--fps 10] [--out SESSION_DIR/drive.mp4]
 
 Frames come from ``SESSION_DIR/camera_log/step_*.jpg``, written while recording is on (see
 ``record`` in docs/OPERATOR_GUIDE.md and ``record`` in carla_probe/config.yaml). Encodes H.264 with
