@@ -28,10 +28,11 @@ Read `docs/OPERATOR_GUIDE.md` §3–8 once before the first command (§7 is the 
 technique). Then repeat:
 
 1. **Look.**
-   - *Sensors:* `observe` (speed, route points, next turn) plus `get_camera` (read the JPGs:
-     `CAM_FRONT` always, and side/back cameras at junctions, merges and lane changes).
-   - *Privileged:* `observe` (lane, route, lights, signs, nearest actors), plus `render_bev` when the
-     geometry is unclear.
+   - *Sensors:* `percept` — speed, route points, next turn, and a JPG path from every camera. Open
+     `CAM_FRONT` always, and the side/back cameras at junctions, merges, lane changes and whenever
+     something may be coming up behind you.
+   - *Privileged:* `percept` (lane, route, lights, signs, nearest actors, plus the camera JPGs),
+     and `render_bev` when the geometry is unclear.
 2. **Decide the next 1–2 s.** Build `apply_plan` waypoints (ego frame: `fwd` ahead, `left` to the
    LEFT) from the route points and the lane. Set `target_speed` to a safe speed, and 0 to stop.
 3. **Advance.** Use `apply_plan ... ticks=<5-40> why="..."`: short near other road users, longer

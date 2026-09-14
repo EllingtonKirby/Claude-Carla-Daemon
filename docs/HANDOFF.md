@@ -111,14 +111,14 @@ The session dir is printed on the launcher's `session:` line. While paused, the 
 | # | command | pass | if it fails, look at |
 |---|---|---|---|
 | 1 | `status` | `ok: true`, `step: 0`, `mode: hold`, `access: privileged`, `speed_limit_mps` a number, `score` **not null** | `score: null`: the patched evaluator did not call `set_scenario` (`grep set_scenario third_party/Bench2Drive/leaderboard/leaderboard/leaderboard_evaluator.py`). Crash before this: `SESSION_DIR/evaluator.log`; sensor validation (camera mounts ≤ 3 m from origin, ≤ 8 cameras), `setup` / `set_global_plan` |
-| 2 | `observe` | `nav.route_points_ego[0]` ≈ `[5, ~0]`; `lane` not null with `lane_width_m` ≈ 3–4; nearby vehicles with plausible `fwd`/`left` | route points far away or behind: `set_global_plan` / `_update_route_progress` |
+| 2 | `percept` | `nav.route_points_ego[0]` ≈ `[5, ~0]`; `lane` not null with `lane_width_m` ≈ 3–4; nearby vehicles with plausible `fwd`/`left` | route points far away or behind: `set_global_plan` / `_update_route_progress` |
 | 3 | `render_bev`, open the PNG | grey lanes under the blue route, ego (red) bottom-centre facing up, vehicles on lanes | lanes offset or rotated: `_local_lanes` / `_yaw_rel_ccw`; no lanes: `CarlaDataProvider.get_map().get_waypoint`; errors about `get_level_bbs`: `_parked_vehicles` |
-| 4 | `get_camera` | 4 JPGs showing the road ahead / left / right / behind | camera ids in `config.yaml` |
+| 4 | open the 4 JPGs `percept` returned | the road ahead / left / right / behind | camera ids in `config.yaml` |
 | 5 | `apply_plan 'waypoints=[[4,0],[8,0],[12,0],[16,0],[20,0]]' target_speed=5 ticks=40` | `result.reason: ticks`, `speed_mps` ≈ 3–5, `mode: plan`, the car moved forward, not sideways | steering sign: `pid.py` (steer + = right); plan anchoring: `geometry.ego_to_world` |
 | 6 | `get_state` | traffic lights within 80 m have a state Red / Green / Yellow; stop signs list `trigger_ego` | `_traffic_lights`, `_stop_signs` |
 | 7 | `set_control steer=0 throttle=0 brake=1 ticks=40`, then `run_until_event event=stopped max_ticks=200` | reason `stopped`, `speed_mps` < 0.1 | |
-| 8 | drive to the end (`observe` + `apply_plan` along `nav.route_points_ego`, 20–40 ticks at a time) | final advance returns `route_end`; `result.json` has a record; the launcher **exits by itself with status 0** and prints a summary table | launcher never exits: the teardown watcher in `run_session.sh`; no `probe_done.json`: `ProbeAgent.destroy` |
-| 9 | after the launcher exits: `python tools/replay_sim.py SESSION_DIR frames --from-step 100 --to-step 100 --view front` | the image matches the driver's view at step 100 (compare with `get_camera` output or `camera_log/`); `score_events.jsonl` rows match `result.json` infractions; `decisions.txt` lists every driving command with its `why` and outcome | no `*_rep0.log`: `SIM_RECORD` / the evaluator's `--record`; no `*_rep0.json`: the patch (re-run `setup_bench2drive.sh` after deleting `third_party/Bench2Drive`); misaligned replay: `replay_sim.Session.time_of_frame` |
+| 8 | drive to the end (`percept` + `apply_plan` along `nav.route_points_ego`, 20–40 ticks at a time) | final advance returns `route_end`; `result.json` has a record; the launcher **exits by itself with status 0** and prints a summary table | launcher never exits: the teardown watcher in `run_session.sh`; no `probe_done.json`: `ProbeAgent.destroy` |
+| 9 | after the launcher exits: `python tools/replay_sim.py SESSION_DIR frames --from-step 100 --to-step 100 --view front` | the image matches the driver's view at step 100 (compare with `percept` output or `camera_log/`); `score_events.jsonl` rows match `result.json` infractions; `decisions.txt` lists every driving command with its `why` and outcome | no `*_rep0.log`: `SIM_RECORD` / the evaluator's `--record`; no `*_rep0.json`: the patch (re-run `setup_bench2drive.sh` after deleting `third_party/Bench2Drive`); misaligned replay: `replay_sim.Session.time_of_frame` |
 
 Also check that `commands.jsonl` and `trajectory.jsonl` in the session dir are populated.
 
@@ -130,7 +130,7 @@ New session: `ACCESS=sensors bash scripts/run_session.sh 25378 > /tmp/session.ou
 |---|---|---|---|
 | 1 | `status` | `access: sensors`; **no** `score`, `speed_limit_mps` or `collision_contacts` keys | |
 | 2 | `get_state` | `pose_estimate.x/y` within ~1 m of the privileged run's start (`trajectory.jsonl` step 0 of both sessions), **not ~1e5**; `yaw_deg` within a few degrees of it | x/y: `geometry.solve_geo_reference` / `gps_to_world`, GPS layout `[lat, lon, alt]`. Yaw off by 90°/180° or mirrored: `geometry.compass_to_yaw_deg`, IMU layout (compass last) |
-| 3 | `observe` | `nav.route_points_ego[0]` within ~1–2 m of `[5, 0]` | yaw conversion (step 2) |
+| 3 | `percept` | `nav.route_points_ego[0]` within ~1–2 m of `[5, 0]` | yaw conversion (step 2) |
 | 4 | `get_score` | refused: `ok: false`, mentions `access=sensors` | `_denied` |
 | 5 | `apply_plan 'waypoints=[[4,0],[8,0],[12,0],[16,0],[20,0]]' target_speed=5 ticks=40` | straight ahead, no weaving (`steer` in `trajectory.jsonl` stays small) | GNSS noise reaching the PID: `gnss_position_gain` |
 | 6 | `render_bev` | route + route points + ego only (no lanes / actors) | |
@@ -147,10 +147,16 @@ Between sessions, if a CARLA or evaluator process is left behind: `bash scripts/
   reviewed as part of the result (§5.3).
 - Fixed settings: `TM_SEED=0`, default `carla_probe/config.yaml` except `access`, `AGENT_MAX_TICKS`
   unset. Report any deviation.
-- The driver harness is part of the definition. `DRIVER=drive_loop` (default) is the bespoke loop;
-  `DRIVER=claude_p` is the original `claude -p` driver. Their numbers are separate baselines, never
-  averaged. For `drive_loop`, report `PROMPT_VARIANT` too (`baseline` is the headline; `guided` is
-  an intervention under test).
+- The driver harness is part of the definition. `DRIVER=claude_p` (default) is the original
+  `claude -p` driver; `DRIVER=drive_loop` is the bespoke loop. Their numbers are separate
+  baselines, never averaged. For `drive_loop`, report `PROMPT_VARIANT` too (`baseline` is the
+  headline; `guided` is an intervention under test).
+- **How runs are paid for.** `claude_p` shells out to the `claude` CLI and so runs on whatever that
+  is logged in to, normally a Claude subscription. `drive_loop` calls the Messages API and always
+  bills API usage — there is no supported route from programmatic code to a subscription (the Agent
+  SDK is explicitly directed to API keys too). That is why `claude_p` is the default. It also means
+  a subscription-backed run's `total_cost_usd` is an API-equivalent figure, not a bill: what binds
+  is the usage allowance, so compare token counts and treat dollars as a proxy.
 - The driver uses only the probe protocol: no route XMLs, scenario or simulator code, logs, config
   edits or human hints. On the sensors track it may open only files whose paths the daemon returns.
 - Traffic is seeded but not bit-exact, and it reacts to the ego: run several attempts per route
@@ -166,8 +172,9 @@ bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> > /tmp/eval_<RO
 
 It blocks until the route is scored, so run it in the background and read its output file for
 progress. `drive_loop` needs Anthropic API credentials in the environment (`ANTHROPIC_API_KEY`, or
-an `ant auth login` profile); `run_eval.sh` checks the SDK is installed before launching CARLA, but
-a missing credential only surfaces on the driver's first request. A Claude Code background task is killed with its session, taking CARLA and the driver
+an `ant auth login` profile — that profile is developer-platform OAuth, so it bills API usage like
+a key does); `run_eval.sh` checks the SDK is installed before launching CARLA, but a missing
+credential only surfaces on the driver's first request. A Claude Code background task is killed with its session, taking CARLA and the driver
 down mid-route with no score. For runs that may outlive your session, detach it:
 `setsid nohup bash scripts/run_eval.sh ... > /tmp/eval.out 2>&1 < /dev/null &`. After a kill, run
 `bash scripts/clean_carla.sh <CARLA_PORT>`, and report the run as aborted (`benchmark/PROTOCOL.md`
@@ -184,14 +191,14 @@ does:
    agent failure) and records `driver_stopped_before_route_end` in `driver.json`. Then it waits
    for scoring and prints the summary.
 
-**The two drivers.** `DRIVER=drive_loop` (default) runs `carla_probe/drive_loop.py`: a purpose-built
+**The two drivers.** `DRIVER=drive_loop` runs `carla_probe/drive_loop.py`: a purpose-built
 loop on the Messages API whose entire action space is the probe tools. It cannot open a file, so
 PROTOCOL rule 7 holds by construction, and it needs no sandbox. Its system prompt and tool schemas
 are the benchmark definition — snapshotted to the session as `prompt.txt` / `tools.json` and hashed
 into `driver.json`.
 
-`DRIVER=claude_p` runs the original `claude -p` driver, kept so the runs made with it stay
-reproducible. It is a general-purpose agent with Bash and Read, so `run_eval.sh` additionally builds
+`DRIVER=claude_p` (the default) runs the original `claude -p` driver. It is a general-purpose agent
+with Bash and Read, so `run_eval.sh` additionally builds
 it a sandbox (fresh empty directory outside the repo, Claude Code sandbox off, no user/project
 settings, tools limited to Bash and Read, `dontAsk` permissions allowing only the probe client,
 reads under the session's `frames/` and the three driver documents; session files, routes and
@@ -232,7 +239,7 @@ may open none of it except the images the daemon returns (the eval sandbox enfor
 | `decisions.jsonl`, `decisions.txt` | daemon | **driving decision justifications**: every accepted driving command with `step`, `t`, `frame`, arguments and the driver's `why`, then its outcome (reason, ticks, step, speed). `.txt` is the same, human-readable |
 | `commands.jsonl` | daemon | every command (including observations and refused ones) with wall time and step, and `advance_done` rows |
 | `trajectory.jsonl` | daemon | per tick: step, sim time, CARLA `frame`, x / y / yaw / speed, mode, steer / throttle / brake. **Sensors track: the GNSS pose estimate**; ground truth is in the recording |
-| `frames/frame_<step>/` | daemon | every image the driver requested (`get_camera`, `render_bev`, `dump_frame`) |
+| `frames/frame_<step>/` | daemon | every image the driver requested (`percept`, `render_bev`, `dump_frame`) |
 | `camera_log/step_<step>.jpg` | daemon | periodic frames from `record.camera_id`, when `RECORD_CAMERA_EVERY=N` is set (or the driver used `record`) |
 | `evaluator.log`, `carla.log`, `launcher.log`, `probe_done.json` | leaderboard, CARLA, launcher, daemon | per-criterion table at route end, crashes, launch progress, final status |
 | `driver_loop.jsonl` | `carla_probe/drive_loop.py` | one row per tool call from the bespoke driver loop: tool, `why`, outcome, step, route progress, and the turn's token usage split into cache reads / writes. Only written by that loop, not by `run_eval.sh` |
@@ -274,6 +281,11 @@ are in command order.
   frame `replay_sim.py` labels step S really is the world at step S, by replaying and scoring the
   ego's position against `recorder_truth.json` over a range of lags. Prints the best lag and the
   mean error; aligned means best lag 0 at ~0.00 m. Run it after touching the replay path.
+- `python tools/cost_report.py SESSION_DIR...`: turns, decisions, turns-per-decision, average
+  context, tokens by class, cost and the §0.3 cost model constant `k = cost / turns**2`, for either
+  driver (`driver_loop.jsonl` turn rows, or `claude -p`'s final `result` row — assistant messages
+  repeat their usage as a turn streams, so summing those over-counts 3-5x). It warns if its price
+  table drifts more than 1% from what a run itself reported.
 - `python tools/make_video.py SESSION_DIR`: mp4 from `camera_log/`.
 - Videos (`--video`, `make_video.py`) are H.264 (`yuv420p`) encoded by ffmpeg, so they play in browsers and
   common players. Replays run at real time (10 fps with `--every 2`).
@@ -308,6 +320,13 @@ To judge whether a driver's decisions fit the scene:
   surviving set flips between attempts. Space `--port` / `CARLA_PORT` by at least 4 (10 is
   comfortable). A collision can also destabilise a server that is already mid-render, not just
   block a new one.
+- **Never edit a shell script while a run of it is in flight.** Bash reads a script incrementally
+  from the file by byte offset, so inserting or deleting lines shifts every offset after the point
+  the interpreter has reached and it resumes mid-token: `run_eval.sh: line NNN: syntax error near
+  unexpected token '('`, with the file on disk perfectly valid. The route itself is usually fine --
+  the daemon and the leaderboard are separate processes -- but the launcher dies wherever it was,
+  so post-run steps are skipped (`driver.json` loses its `ended` / `driver_exit_code` fields, and a
+  driver that stops early is not shut down). Let the run finish, or copy the script first.
 - **`pgrep -f <pattern>` matches the shell running it** when the pattern appears in its own command
   line, so a cleanup or wait loop can kill itself or never exit. Assemble such patterns at runtime.
 - **`status` never answers.** Look at `SESSION_DIR/carla.log` (CARLA died, e.g. no GPU or Vulkan)

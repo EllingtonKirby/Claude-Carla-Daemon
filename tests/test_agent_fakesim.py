@@ -16,6 +16,8 @@ import threading
 import types
 from pathlib import Path
 
+import cv2
+
 import numpy as np
 import pytest
 import yaml
@@ -372,7 +374,7 @@ def test_privileged_session(make_session):
     assert r["status"]["speed_limit_mps"] == pytest.approx(10.0)
     assert "apply_plan waypoints ticks [target_speed] [stop_on_collision]" in c.call("help")["commands"]
 
-    obs = c.call("observe")["observe"]
+    obs = c.call("percept")["observe"]
     lead = next(a for a in obs["actors_nearest"] if a["id"] == 2)
     assert [(p["fwd"], p["left"]) for p in obs["parked_nearest"]] == [(pytest.approx(30.0), pytest.approx(4.0))]
     assert (lead["fwd"], lead["left"]) == (pytest.approx(20.0), pytest.approx(-5.0))
@@ -394,17 +396,27 @@ def test_privileged_session(make_session):
     assert Path(c.call("render_bev")["file"]).is_file()
     dump = c.call("dump_frame")["dump"]
     assert Path(dump["state"]).is_file() and Path(dump["bev"]).is_file() and len(dump["cameras"]) == 4
-    assert len(c.call("get_camera", cams=["CAM_FRONT"], scale=0.5)["files"]) == 1
+    # percept is the ONLY view: observe and get_camera are gone, so there is one way to see.
+    assert c.call("get_camera", cams=["CAM_FRONT"])["ok"] is False
+    assert c.call("observe")["ok"] is False
+    assert len(c.call("percept", cams=["CAM_FRONT"])["files"]) == 1
+    # scale is the harness's control: a driver-supplied value is ignored, not honoured.
+    def _front(**kw):
+        r = c.call("percept", cams=["CAM_FRONT"], **kw)
+        return cv2.imread(str(Path(r["frames_dir"]) / r["files"][0])).shape[:2]
+    assert _front(scale=1.0) == _front()
 
-    # percept: one round trip for what observe + get_camera returned separately above.
     r = c.call("percept", cams=["CAM_FRONT", "CAM_BACK"])
-    assert r["ok"] and [Path(f).name for f in r["files"]] == ["CAM_FRONT.jpg", "CAM_BACK.jpg"]
+    # The directory once, bare names after: cheaper to repeat, and still absolute when joined.
+    assert r["ok"] and r["files"] == ["CAM_FRONT.jpg", "CAM_BACK.jpg"]
+    assert Path(r["frames_dir"]).is_absolute() and (Path(r["frames_dir"]) / r["files"][0]).is_file()
     assert r["observe"].keys() == obs.keys() and r["status"]["step"] == c.call("status")["status"]["step"]
-    assert len(c.call("percept")["files"]) == 3  # config default: the three forward cameras
-    # ... and attached to a driving command, so a decision costs ONE round trip, not three.
+    assert len(c.call("percept")["files"]) == 4  # config default (cams: []): every camera
+    # ... and attached to a driving command on request, so a decision costs ONE round trip, not
+    # three. Off unless asked for: an unwanted percept is tokens the driver cannot evict.
     r = c.call("tick", n=2, percept=True, why="test: percept rides along")
     assert r["result"]["reason"] == "ticks" and r["observe"]["step"] == r["status"]["step"]
-    assert Path(r["files"][0]).parent.name == f"frame_{r['status']['step']:05d}"
+    assert Path(r["frames_dir"]).name == f"frame_{r['status']['step']:05d}"
     assert "observe" not in c.call("tick", n=1, why="test: no percept asked for")
 
     # Live score: criteria events are concatenated per criterion, so a new event can land BEFORE an
@@ -486,7 +498,7 @@ def test_sensors_session(make_session):
     assert not {"speed_limit_mps", "collision_contacts", "score"} & set(st)
     assert s.world.spawned == 0  # no collision sensor
 
-    obs = c.call("observe")["observe"]
+    obs = c.call("percept")["observe"]
     state = c.call("get_state")["state"]
     for payload in (obs, state):
         leaked = [k for k in _keys(payload) if any(k.startswith(w) for w in _PRIVILEGED_WORDS)]
@@ -519,7 +531,8 @@ def test_sensors_session(make_session):
     attached = c.call("tick", n=2, percept=True)
     for payload in (standalone, attached):
         assert payload["ok"] and payload["observe"].keys() == obs.keys()
-        assert [Path(f).name for f in payload["files"]] == ["CAM_FRONT.jpg", "CAM_FRONT_LEFT.jpg", "CAM_FRONT_RIGHT.jpg"]
+        assert payload["files"] == [
+            "CAM_FRONT.jpg", "CAM_FRONT_LEFT.jpg", "CAM_FRONT_RIGHT.jpg", "CAM_BACK.jpg"]
         leaked = [k for k in _keys(payload) if any(k.startswith(w) for w in _PRIVILEGED_WORDS)]
         assert not leaked, leaked
 

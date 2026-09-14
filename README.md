@@ -40,7 +40,7 @@ pytest                                               # offline unit tests (no si
 ACCESS=sensors bash scripts/run_session.sh 25378 &   # smoke route; 2091 is the standard benchmark
 python -m carla_probe.client --wait 600 status       # waits for CARLA + route load
 python -m carla_probe.client observe
-python -m carla_probe.client get_camera cams='["CAM_FRONT"]'   # prints a JPG path
+python -m carla_probe.client percept cams='["CAM_FRONT"]'      # state + a JPG path
 python -m carla_probe.client apply_plan 'waypoints=[[4,0],[8,0],[12,0],[16,0],[20,0]]' target_speed=6 ticks=40 \
     why="lane ahead is clear; follow it at 6 m/s"      # every driving command carries a justification
 ```

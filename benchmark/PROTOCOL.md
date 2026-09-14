@@ -42,15 +42,19 @@ it adds no information beyond what the sensors show.
 2. **The driver harness is part of the benchmark definition.** `run_eval.sh` offers two, selected
    with `DRIVER=`. They are different configurations: report which one, and never average or
    directly compare their scores.
-   - `drive_loop` (default): `carla_probe/drive_loop.py`, a loop on the Messages API whose entire
+   - `claude_p` (default): the original `claude -p` driver, which runs on whatever the `claude` CLI
+     is logged in to — normally a Claude subscription, in which case the reported `total_cost_usd`
+     is an API-equivalent figure rather than a bill. Being a general-purpose agent with Bash and
+     Read, it needs the driver sandbox and the pre-flight isolation check, both of which
+     `run_eval.sh` applies.
+   - `drive_loop`: `carla_probe/drive_loop.py`, a loop on the Messages API whose entire
      action space is the probe tools. It has no filesystem access, so rule 7 holds by construction
      rather than by enforcement. Its system prompt and tool schemas ARE the definition: both are
      snapshotted into the session (`prompt.txt`, `tools.json`) and hashed into `driver.json` as
      `definition_sha256`. Report `PROMPT_VARIANT` -- `baseline` is the headline configuration;
-     `guided` adds driving guidance and is an intervention under test, not the reference.
-   - `claude_p`: the original `claude -p` driver, kept so runs made with it stay reproducible.
-     Being a general-purpose agent with Bash and Read, it needs the driver sandbox and the
-     pre-flight isolation check, both of which `run_eval.sh` applies.
+     `guided` adds driving guidance and is an intervention under test, not the reference. It always
+     bills Anthropic API usage: there is no supported route from programmatic code to a
+     subscription.
 3. **One attempt per route.** Report crashed or aborted sessions as failures (DS 0); do not rerun
    until you get a good one.
 4. **Fixed settings:** `TM_SEED=0`, the default `carla_probe/config.yaml` apart from `access`,
@@ -64,7 +68,7 @@ it adds no information beyond what the sensors show.
    code or config during a run, and no human hints.
 7. **Sensors track: no side channels.** The session directory holds privileged data
    (`evaluator.log`, `carla.log`, `result.json`). While driving, open only the files whose paths the
-   daemon returns (`get_camera`, `render_bev`, `dump_frame`). Reading logs is allowed only to
+   daemon returns (`percept`, `render_bev`, `dump_frame`). Reading logs is allowed only to
    diagnose a launch failure before the first driving command, or after the route has ended.
 8. **No `shutdown`** unless the session is unrecoverable; it scores as an agent failure.
 9. Pausing is free: thinking time between commands does not consume route time.

@@ -81,13 +81,25 @@ bev:
   lane_step_m: 2.0
   lane_max_nodes: 6000
 
-# percept: one round trip returning the access-appropriate `observe` plus the camera JPGs for the
-# current tick, instead of observe + get_camera + one read per image. `cams` and `scale` are the
+# percept: the driver's only view of the sim -- the access-appropriate driving state plus JPGs for the
+# current tick. It is the only command that returns camera images: `cams` and `scale` are the
 # defaults when the command does not name its own; percept=true on a driving command attaches the
 # same payload to the reply that reports the advance's outcome.
 percept:
-  cams: [CAM_FRONT, CAM_FRONT_LEFT, CAM_FRONT_RIGHT]
-  scale: 1.0
+  # Empty = every camera in `cameras` below, which is the default because a view the percept does
+  # not offer is effectively invisible: the driver can only ask for what it knows to ask for. This
+  # is free -- the reply carries PATHS, so the cost of a view is paid only when the driver opens it.
+  # Naming a subset here hides the rest; do that only to deliberately restrict what a driver can see.
+  cams: []
+  # Resolution of the JPGs a percept writes, as a fraction of the `cameras` sizes below. The
+  # harness's control, not the driver's: a `scale` argument on the command is ignored, so this can
+  # be varied experimentally. Image tokens go as the PIXEL COUNT, so 0.5 is a quarter of the tokens.
+  scale: 0.5
+  # Attach a percept to every driving command's reply (percept=true on the command does it for one).
+  # OFF by default: a percept the driver did not want is ~470 tokens it cannot evict, and deciding
+  # when to look is part of what the sensors track measures. Turn it on only to take that decision
+  # away deliberately.
+  on_advance: false
 
 record:
   trajectory: true            # per-tick pose + control to trajectory.jsonl (cheap)
