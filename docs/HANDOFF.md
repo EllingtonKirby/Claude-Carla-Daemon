@@ -147,10 +147,16 @@ Between sessions, if a CARLA or evaluator process is left behind: `bash scripts/
   reviewed as part of the result (§5.3).
 - Fixed settings: `TM_SEED=0`, default `carla_probe/config.yaml` except `access`, `AGENT_MAX_TICKS`
   unset. Report any deviation.
-- The driver harness is part of the definition. `DRIVER=drive_loop` (default) is the bespoke loop;
-  `DRIVER=claude_p` is the original `claude -p` driver. Their numbers are separate baselines, never
-  averaged. For `drive_loop`, report `PROMPT_VARIANT` too (`baseline` is the headline; `guided` is
-  an intervention under test).
+- The driver harness is part of the definition. `DRIVER=claude_p` (default) is the original
+  `claude -p` driver; `DRIVER=drive_loop` is the bespoke loop. Their numbers are separate
+  baselines, never averaged. For `drive_loop`, report `PROMPT_VARIANT` too (`baseline` is the
+  headline; `guided` is an intervention under test).
+- **How runs are paid for.** `claude_p` shells out to the `claude` CLI and so runs on whatever that
+  is logged in to, normally a Claude subscription. `drive_loop` calls the Messages API and always
+  bills API usage — there is no supported route from programmatic code to a subscription (the Agent
+  SDK is explicitly directed to API keys too). That is why `claude_p` is the default. It also means
+  a subscription-backed run's `total_cost_usd` is an API-equivalent figure, not a bill: what binds
+  is the usage allowance, so compare token counts and treat dollars as a proxy.
 - The driver uses only the probe protocol: no route XMLs, scenario or simulator code, logs, config
   edits or human hints. On the sensors track it may open only files whose paths the daemon returns.
 - Traffic is seeded but not bit-exact, and it reacts to the ego: run several attempts per route
@@ -166,8 +172,9 @@ bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> > /tmp/eval_<RO
 
 It blocks until the route is scored, so run it in the background and read its output file for
 progress. `drive_loop` needs Anthropic API credentials in the environment (`ANTHROPIC_API_KEY`, or
-an `ant auth login` profile); `run_eval.sh` checks the SDK is installed before launching CARLA, but
-a missing credential only surfaces on the driver's first request. A Claude Code background task is killed with its session, taking CARLA and the driver
+an `ant auth login` profile — that profile is developer-platform OAuth, so it bills API usage like
+a key does); `run_eval.sh` checks the SDK is installed before launching CARLA, but a missing
+credential only surfaces on the driver's first request. A Claude Code background task is killed with its session, taking CARLA and the driver
 down mid-route with no score. For runs that may outlive your session, detach it:
 `setsid nohup bash scripts/run_eval.sh ... > /tmp/eval.out 2>&1 < /dev/null &`. After a kill, run
 `bash scripts/clean_carla.sh <CARLA_PORT>`, and report the run as aborted (`benchmark/PROTOCOL.md`
@@ -184,14 +191,14 @@ does:
    agent failure) and records `driver_stopped_before_route_end` in `driver.json`. Then it waits
    for scoring and prints the summary.
 
-**The two drivers.** `DRIVER=drive_loop` (default) runs `carla_probe/drive_loop.py`: a purpose-built
+**The two drivers.** `DRIVER=drive_loop` runs `carla_probe/drive_loop.py`: a purpose-built
 loop on the Messages API whose entire action space is the probe tools. It cannot open a file, so
 PROTOCOL rule 7 holds by construction, and it needs no sandbox. Its system prompt and tool schemas
 are the benchmark definition — snapshotted to the session as `prompt.txt` / `tools.json` and hashed
 into `driver.json`.
 
-`DRIVER=claude_p` runs the original `claude -p` driver, kept so the runs made with it stay
-reproducible. It is a general-purpose agent with Bash and Read, so `run_eval.sh` additionally builds
+`DRIVER=claude_p` (the default) runs the original `claude -p` driver. It is a general-purpose agent
+with Bash and Read, so `run_eval.sh` additionally builds
 it a sandbox (fresh empty directory outside the repo, Claude Code sandbox off, no user/project
 settings, tools limited to Bash and Read, `dontAsk` permissions allowing only the probe client,
 reads under the session's `frames/` and the three driver documents; session files, routes and

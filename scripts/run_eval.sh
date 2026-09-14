@@ -12,19 +12,29 @@
 #
 # Two drivers, selected with DRIVER. They are different configurations: never average or directly
 # compare their scores (docs/HANDOFF.md §4.1, benchmark/PROTOCOL.md).
-#   drive_loop (default)  carla_probe/drive_loop.py: a purpose-built loop on the Messages API whose
-#                         whole action space is the probe tools. PROTOCOL rule 4 -- the driver uses
+#
+# HOW A RUN IS PAID FOR decides the default. claude_p shells out to the `claude` CLI, so it runs on
+# whatever that is logged in to -- a Claude subscription, typically. drive_loop calls the Messages
+# API and so always bills API usage: there is no supported route from programmatic code to a
+# subscription. claude_p is the default so an unattended run cannot silently spend API credits.
+#   claude_p (default)    the original isolated `claude -p` driver. A general-purpose agent with
+#                         Bash and Read, so it needs the sandbox and the pre-flight isolation check
+#                         in which a cheap model must be DENIED reading the session directory.
+#   drive_loop            carla_probe/drive_loop.py: a purpose-built loop on the Messages API whose
+#                         whole action space is the probe tools. PROTOCOL rule 7 -- the driver uses
 #                         only the probe protocol -- holds by construction: it has no filesystem
-#                         access to sandbox. Needs Anthropic API credentials.
-#   claude_p              the original isolated `claude -p` driver, kept so the runs made with it
-#                         stay reproducible. Being a general-purpose agent with Bash and Read, it
-#                         additionally needs a sandbox and a pre-flight isolation check in which a
-#                         cheap model must be DENIED reading the session directory.
+#                         access to sandbox. The better harness, but API-billed: opt in explicitly.
 #
 # Env: GPU_RANK (0)  CARLA_PORT (20000)  PROBE_PORT (8790): stride CARLA_PORT by >= 10 per parallel run
-#      DRIVER (drive_loop)  LOAD_TIMEOUT_S (900)
+#      DRIVER (claude_p)  LOAD_TIMEOUT_S (900)
 #      drive_loop only: PROMPT_VARIANT (baseline|guided)  EFFORT (high)  KEEP_IMAGES (3)
+#                       MAX_TURNS (400): hard ceiling on API turns, i.e. on what one run can spend
 #      claude_p only:   ISOLATION_CHECK (1)  CHECK_MODEL (haiku)
+#                       AUTOCOMPACT (auto): Claude Code's auto-compact window, `auto` or 100k-1M.
+#                       A THRESHOLD, not a cadence: it fires when the window reaches that size, so
+#                       100k is the tightest cap available. Lossy -- compaction summarizes, and a
+#                       summarized camera frame is gone -- but the daemon re-supplies the scene on
+#                       every percept, so what it destroys is looks the driver has already acted on.
 #      SIM_RECORD (1)  RECORD_CAMERA_EVERY (config value): recording knobs, passed to run_session.sh
 set -euo pipefail
 
@@ -34,7 +44,7 @@ ROUTE="${1:?$USAGE}"
 TRACK="${2:?$USAGE}"
 MODEL="${3:?$USAGE}"
 case "$TRACK" in sensors | privileged) ;; *) echo "ERROR: track must be sensors or privileged" >&2; exit 1 ;; esac
-: "${DRIVER:=drive_loop}"
+: "${DRIVER:=claude_p}"
 case "$DRIVER" in drive_loop | claude_p) ;; *) echo "ERROR: DRIVER must be drive_loop or claude_p" >&2; exit 1 ;; esac
 # Fail before CARLA spends two minutes loading a town.
 if [ "$DRIVER" = claude_p ] || [ "${ISOLATION_CHECK:-1}" = 1 ]; then
@@ -52,9 +62,11 @@ fi
 : "${LOAD_TIMEOUT_S:=900}"
 : "${ISOLATION_CHECK:=1}"
 : "${CHECK_MODEL:=haiku}"
+: "${AUTOCOMPACT:=auto}"
 : "${PROMPT_VARIANT:=baseline}"
 : "${EFFORT:=high}"
 : "${KEEP_IMAGES:=3}"
+: "${MAX_TURNS:=400}"
 export GPU_RANK CARLA_PORT PROBE_PORT
 
 SESSION_DIR="$(realpath -m "${4:-$REPO_ROOT/sessions/$(date +%Y%m%d_%H%M%S)_route_${ROUTE}_${TRACK}}")"
@@ -124,7 +136,8 @@ Drive the route to the end. Stop when an advance returns route_end or the client
 the daemon closed the connection. Then reply with a short account of the drive.
 EOF
     cp "$DRIVER_WS/prompt.txt" "$DRIVER_WS/settings.json" "$SESSION_DIR/"
-    DRIVER_FLAGS=(--permission-mode dontAsk --tools "Bash,Read" --setting-sources "" --settings "$DRIVER_WS/settings.json")
+    DRIVER_FLAGS=(--permission-mode dontAsk --tools "Bash,Read" --setting-sources "" --settings "$DRIVER_WS/settings.json"
+                  --autocompact "$AUTOCOMPACT")
 
     # ---- 3. isolation check --------------------------------------------------------------------------
     if [ "$ISOLATION_CHECK" = "1" ]; then
@@ -167,6 +180,7 @@ fi
 if [ "$DRIVER" = claude_p ]; then
     cat > "$SESSION_DIR/driver.json" <<EOF
 {"driver": "$DRIVER", "model": "$MODEL", "claude_code": "$(claude --version)", "track": "$TRACK", "route": "$ROUTE",
+ "autocompact": "$AUTOCOMPACT",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}
 EOF
@@ -182,12 +196,14 @@ else
     cat > "$SESSION_DIR/driver.json" <<EOF
 {"driver": "$DRIVER", "model": "$MODEL", "track": "$TRACK", "route": "$ROUTE",
  "prompt_variant": "$PROMPT_VARIANT", "effort": "$EFFORT", "keep_images": $KEEP_IMAGES,
+ "max_turns": $MAX_TURNS,
  "started": "$(date -Iseconds)"}
 EOF
     echo "    driver running (log: $SESSION_DIR/driver_loop.jsonl)"
     set +e
     "$PY" -m carla_probe.drive_loop --addr "$ADDR" --session "$SESSION_DIR" \
         --model "$MODEL" --prompt "$PROMPT_VARIANT" --effort "$EFFORT" --keep-images "$KEEP_IMAGES" \
+        --max-turns "$MAX_TURNS" \
         < /dev/null > "$SESSION_DIR/driver_stdout.log" 2> "$SESSION_DIR/driver_stderr.log"
     driver_rc=$?
     set -e
