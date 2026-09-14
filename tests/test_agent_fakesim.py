@@ -396,6 +396,17 @@ def test_privileged_session(make_session):
     assert Path(dump["state"]).is_file() and Path(dump["bev"]).is_file() and len(dump["cameras"]) == 4
     assert len(c.call("get_camera", cams=["CAM_FRONT"], scale=0.5)["files"]) == 1
 
+    # percept: one round trip for what observe + get_camera returned separately above.
+    r = c.call("percept", cams=["CAM_FRONT", "CAM_BACK"])
+    assert r["ok"] and [Path(f).name for f in r["files"]] == ["CAM_FRONT.jpg", "CAM_BACK.jpg"]
+    assert r["observe"].keys() == obs.keys() and r["status"]["step"] == c.call("status")["status"]["step"]
+    assert len(c.call("percept")["files"]) == 3  # config default: the three forward cameras
+    # ... and attached to a driving command, so a decision costs ONE round trip, not three.
+    r = c.call("tick", n=2, percept=True, why="test: percept rides along")
+    assert r["result"]["reason"] == "ticks" and r["observe"]["step"] == r["status"]["step"]
+    assert Path(r["files"][0]).parent.name == f"frame_{r['status']['step']:05d}"
+    assert "observe" not in c.call("tick", n=1, why="test: no percept asked for")
+
     # Live score: criteria events are concatenated per criterion, so a new event can land BEFORE an
     # already-reported one. new_infractions must report each event exactly once.
     step = c.call("status")["status"]["step"]
@@ -501,6 +512,16 @@ def test_sensors_session(make_session):
         assert resp["ok"] is False and "access=sensors" in resp["error"], (name, resp)
         assert resp["status"]["mode"] == "hold" and resp["status"]["step"] == 0
     assert "event=collision" not in str(c.call("help")["advance_events"])
+
+    # percept composes the same access-correct builders, so it must leak nothing either -- checked
+    # at both entry points, standalone and attached to a driving command.
+    standalone = c.call("percept")
+    attached = c.call("tick", n=2, percept=True)
+    for payload in (standalone, attached):
+        assert payload["ok"] and payload["observe"].keys() == obs.keys()
+        assert [Path(f).name for f in payload["files"]] == ["CAM_FRONT.jpg", "CAM_FRONT_LEFT.jpg", "CAM_FRONT_RIGHT.jpg"]
+        leaked = [k for k in _keys(payload) if any(k.startswith(w) for w in _PRIVILEGED_WORDS)]
+        assert not leaked, leaked
 
     r = c.call("apply_plan", waypoints=[[3, 0], [6, 0], [9, 0], [12, 0]], target_speed=4, ticks=20)
     assert r["result"] == {"reason": "ticks", "ticks_advanced": 20}

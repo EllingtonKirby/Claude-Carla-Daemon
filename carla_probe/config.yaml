@@ -81,6 +81,14 @@ bev:
   lane_step_m: 2.0
   lane_max_nodes: 6000
 
+# percept: one round trip returning the access-appropriate `observe` plus the camera JPGs for the
+# current tick, instead of observe + get_camera + one read per image. `cams` and `scale` are the
+# defaults when the command does not name its own; percept=true on a driving command attaches the
+# same payload to the reply that reports the advance's outcome.
+percept:
+  cams: [CAM_FRONT, CAM_FRONT_LEFT, CAM_FRONT_RIGHT]
+  scale: 1.0
+
 record:
   trajectory: true            # per-tick pose + control to trajectory.jsonl (cheap)
   camera_id: CAM_FRONT        # camera logged to camera_log/ when frame recording is on
