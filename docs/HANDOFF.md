@@ -320,6 +320,13 @@ To judge whether a driver's decisions fit the scene:
   surviving set flips between attempts. Space `--port` / `CARLA_PORT` by at least 4 (10 is
   comfortable). A collision can also destabilise a server that is already mid-render, not just
   block a new one.
+- **Never edit a shell script while a run of it is in flight.** Bash reads a script incrementally
+  from the file by byte offset, so inserting or deleting lines shifts every offset after the point
+  the interpreter has reached and it resumes mid-token: `run_eval.sh: line NNN: syntax error near
+  unexpected token '('`, with the file on disk perfectly valid. The route itself is usually fine --
+  the daemon and the leaderboard are separate processes -- but the launcher dies wherever it was,
+  so post-run steps are skipped (`driver.json` loses its `ended` / `driver_exit_code` fields, and a
+  driver that stops early is not shut down). Let the run finish, or copy the script first.
 - **`pgrep -f <pattern>` matches the shell running it** when the pattern appears in its own command
   line, so a cleanup or wait loop can kill itself or never exit. Assemble such patterns at runtime.
 - **`status` never answers.** Look at `SESSION_DIR/carla.log` (CARLA died, e.g. no GPU or Vulkan)
