@@ -182,6 +182,14 @@ does:
    agent failure) and records `driver_stopped_before_route_end` in `driver.json`. Then it waits
    for scoring and prints the summary.
 
+**What reaches the driver** is `prompt.txt`, the three documents it names, and whatever the daemon
+returns — nothing else. `--setting-sources ""` is what keeps it that way: it blocks CLAUDE.md and
+memory loading, from the driver's own working directory and from `~/.claude` alike (verified: with
+the flag a CLAUDE.md in the working directory is ignored, without it its contents reach the driver).
+So Claude Code's auto-compaction cannot be given custom instructions, which live in CLAUDE.md —
+accept that rather than relaxing the flag, and if it ever becomes necessary use
+`--setting-sources project`, never `user`, and hash the file into `driver.json`.
+
 **The driver** is a general-purpose agent with Bash and Read, so `run_eval.sh` builds
 it a sandbox (fresh empty directory outside the repo, Claude Code sandbox off, no user/project
 settings, tools limited to Bash and Read, `dontAsk` permissions allowing only the probe client,
