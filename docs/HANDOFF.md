@@ -361,7 +361,10 @@ To judge whether a driver's decisions fit the scene:
 - **`pgrep -f <pattern>` matches the shell running it** when the pattern appears in its own command
   line, so a cleanup or wait loop can kill itself or never exit. Assemble such patterns at runtime.
 - **`status` never answers.** Look at `SESSION_DIR/carla.log` (CARLA died, e.g. no GPU or Vulkan)
-  and `evaluator.log` (agent setup errors, missing map). Town12/13 load for ~2 min.
+  and `evaluator.log` (agent setup errors, missing map). Town12/13 load for ~2 min; **every
+  Fail2Drive route is Town13 and takes 5-8 min to load** on a measured 2080 Ti, during which
+  `evaluator.log` sits at `> Loading the world` and the GPU shows 0 % with memory climbing. That is
+  normal. Wait, rather than raising `LOAD_TIMEOUT_S` blindly and then restarting into the same wait.
 - **`Address already in use` / CARLA won't bind.** Another session holds the ports:
   `bash scripts/clean_carla.sh <CARLA_PORT>`. The traffic manager port (`CARLA_PORT`+20000) must be
   free too.
@@ -377,3 +380,21 @@ To judge whether a driver's decisions fit the scene:
   never run it from a shell command that itself contains the pattern (e.g. inside `bash -c "..."`).
 - **Route is skipped instantly.** The session dir already had a `result.json`; always use a fresh
   one.
+- **Fail2Drive: every route dies with `FileNotFoundError: ..._speed_limits.npy`.** Step 2/2 of
+  `scripts/setup_fail2drive.sh` never completed. srunner loads those maps on *every* route
+  (`background_activity.py` alone guarantees it), and they are gitignored, so a fresh clone has
+  none. `env.sh` refuses to set up a Fail2Drive shell without all 12.
+- **Fail2Drive: the run starts and scores, but nothing unusual ever appears.** You are probably on
+  a stock CARLA 0.9.15. It substitutes default blueprints for the 30 novel assets instead of
+  erroring, so the benchmark quietly measures nothing it claims to. `evaluator.log` should carry
+  `Simulator API version = 0.9.15.2-dirty` on connect; exactly `0.9.15`, or no version warning at
+  all, means the wrong simulator.
+- **Fail2Drive: `import leaderboard` resolves to Bench2Drive (or the reverse).** Both forks ship
+  packages with the same names, and the wrong one does not raise -- it scores under the other
+  benchmark's rules. Re-source `scripts/env.sh` with the right `BENCHMARK`; it strips the other
+  fork from `PYTHONPATH` rather than just reordering. Check with
+  `python -c "import leaderboard; print(leaderboard.__file__)"`.
+- **A sourced script aborts its caller.** `scripts/env.sh` is sourced by `run_session.sh`, which
+  runs under `set -e -o pipefail`, so a `grep` that matches nothing or a glob that expands to
+  nothing takes the whole launcher down -- and both happen in exactly the empty state being tested
+  for. Keep such checks free of pipelines (`env.sh` uses parameter expansion and `find`).
