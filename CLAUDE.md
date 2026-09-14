@@ -7,15 +7,24 @@ be scored by the stock leaderboard.
 or after changing `agent.py`, `config.yaml` or the patch), evals, and recording. Internals are in
 `docs/DESIGN.md`.
 
-- Benchmark runs: `scripts/run_eval.sh` (isolated headless driver). To drive a route interactively,
-  use the `drive-carla` skill; such runs are not benchmark results.
+- Benchmark runs: `scripts/run_eval.sh`. To drive a route interactively, use the `drive-carla`
+  skill; such runs are not benchmark results.
 - Never commit run results, session data or route-specific findings (scenario contents, tactics
   that work on a given route, scorer internals). Drivers under evaluation can read this repo; keep
   results in `sessions/` (gitignored) or outside the repo.
+- Three top-level homes, and code goes in exactly one:
+  `carla_probe/` the daemon and the driver — anything a benchmark run executes;
+  `scripts/` shell only, what sets up and launches a run; no Python lives here;
+  `tools/` offline analysis, never on the path of a run.
 - `carla_probe/agent.py` runs inside the leaderboard process and needs carla/leaderboard/srunner.
   `geometry.py`, `pid.py`, `bev.py`, `server.py` and `client.py` do not, and are unit-tested in
-  `tests/` (`pytest`, no simulator).
+  `tests/` (`pytest`, no simulator). `drive_loop.py` needs only `anthropic` plus `client.py`, and is
+  tested there with the API and the daemon stubbed.
 - Keep `client.py` pure stdlib.
+- `carla_probe/drive_loop.py` is the benchmark driver: its system prompt and tool schemas ARE part
+  of the benchmark definition (hashed into `driver.json`), so changing either makes results
+  non-comparable. Driving guidance belongs in the `guided` prompt variant, which is an intervention
+  under test — never in `baseline`, the headline configuration.
 - Every config knob lives in `carla_probe/config.yaml` and is read with `cfg["key"]`: no code-side
   defaults.
 - Access levels (`access: privileged | sensors`) are enforced in `agent.py`. Any new command or

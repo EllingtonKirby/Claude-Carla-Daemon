@@ -50,7 +50,7 @@ a replayable CARLA recording, timed scoring events, the decision log with every 
 full command log (`docs/HANDOFF.md` §5):
 
 ```bash
-python scripts/summarize_results.py sessions/*
+python tools/summarize_results.py sessions/*
 ```
 
 ## Letting Claude drive
@@ -77,9 +77,12 @@ don't count its runs as benchmark results.
 ## Layout
 
 ```
-carla_probe/        agent.py (leaderboard agent) server.py client.py geometry.py pid.py bev.py config.yaml
-scripts/            setup_carla.sh setup_bench2drive.sh env.sh run_session.sh run_eval.sh clean_carla.sh
-                    summarize_results.py replay_sim.py make_video.py split_routes.py
+carla_probe/        the daemon and the driver: agent.py (leaderboard agent) drive_loop.py (benchmark
+                    driver) server.py client.py geometry.py pid.py bev.py config.yaml
+scripts/            shell only, everything needed to set up and launch a run: setup_carla.sh
+                    setup_bench2drive.sh env.sh run_session.sh run_eval.sh clean_carla.sh
+tools/              offline analysis, none of it needed to run an eval: summarize_results.py
+                    replay_sim.py recorder_truth.py diagnose_alignment.py make_video.py split_routes.py
 patches/            the Bench2Drive leaderboard patch
 benchmark/          route sets + protocol
 tests/              offline unit tests
