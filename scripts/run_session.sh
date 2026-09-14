@@ -153,7 +153,10 @@ PY
 done
 
 cd "$SESSION_DIR"
-CUDA_VISIBLE_DEVICES="$GPU_RANK" python "$LEADERBOARD_ROOT/leaderboard/leaderboard_evaluator.py" \
+# PYTHONUNBUFFERED: evaluator.log is a redirect, so python fully buffers it. Bench2Drive's fork
+# passes flush=True on every print and Fail2Drive's does not, which left the F2D log empty for
+# minutes at a time -- exactly while a slow Town13 load is the thing you want to watch.
+CUDA_VISIBLE_DEVICES="$GPU_RANK" PYTHONUNBUFFERED=1 python "$LEADERBOARD_ROOT/leaderboard/leaderboard_evaluator.py" \
     --routes="$ROUTES" \
     --repetitions=1 \
     --track=SENSORS \

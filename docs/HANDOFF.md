@@ -16,11 +16,18 @@ drivers can read it. Keep run results in `sessions/` (gitignored) or outside the
 
 It measures how well an LLM drives a car in closed loop, scored by an unmodified driving benchmark.
 
-- **Simulator and scoring.** [CARLA](https://carla.org) 0.9.15 runs a
-  [Bench2Drive](https://github.com/Thinklab-SJTU/Bench2Drive) route: a fixed path through a town
-  with traffic and one scripted scenario. The Bench2Drive leaderboard scores the drive: **DS**
+- **Simulator and scoring.** [CARLA](https://carla.org) 0.9.15 runs one route: a fixed path through
+  a town with traffic and one scripted scenario. The leaderboard scores the drive: **DS**
   (driving score) = **RC** (route completion, %) × **IS** (infraction penalty, a product of
   per-infraction multipliers).
+- **Two benchmarks**, selected with `BENCHMARK=` and never pooled
+  (`benchmark/PROTOCOL.md` has the full comparison):
+  - `bench2drive` (default): [Bench2Drive](https://github.com/Thinklab-SJTU/Bench2Drive) 0.0.4,
+    220 routes over 7 towns, on a stock CARLA. Headline number: mean DS.
+  - `fail2drive`: [Fail2Drive](https://github.com/autonomousvision/fail2drive), 100 route *pairs*
+    in Town13, on **its own** CARLA build with 30 novel assets. Each `Generalization_*` route is a
+    shifted version of an in-distribution `Base_*` reference, and the headline number is the
+    **drop** between them, not either absolute score.
 - **The daemon.** `carla_probe/agent.py` is the leaderboard's agent. The leaderboard steps CARLA
   synchronously at 20 Hz and calls the agent every tick, and the agent blocks on a TCP socket until
   it gets a command. So the world is **frozen while the driver thinks**, and time advances only
@@ -34,9 +41,13 @@ It measures how well an LLM drives a car in closed loop, scored by an unmodified
     GNSS, the sparse route plan). The main benchmark.
   - `privileged`: the ground-truth scene (actors, lanes, lights, signs, live score). Useful for
     development and as an upper bound; comparable only to privileged/expert agents.
-- **Route sets** (`benchmark/routes/`): `smoke.txt` (install check, not a benchmark),
-  `standard.txt` (the pinned single-route benchmark) and `dev10.txt` (a broader 10-route set).
-  Route ids map to `routes/bench2drive220/route_<id>.xml`, which drivers must not read.
+
+  A result is therefore a (benchmark, track) pair -- four buckets, none averaged with another.
+- **Route sets** (`benchmark/routes/`). Bench2Drive: `smoke.txt` (install check, not a benchmark),
+  `standard.txt` (the pinned single-route benchmark), `dev10.txt` (a broader 10-route set); ids map
+  to `routes/bench2drive220/route_<id>.xml`. Fail2Drive: `f2d_pair.txt` (2), `f2d_smoke.txt` (8)
+  and `f2d_full.txt` (200); names map to `third_party/fail2drive/fail2drive_split/<name>.xml`. Drivers
+  must not read either tree.
 
 ## 2. Setup
 
@@ -58,9 +69,19 @@ bash scripts/setup_carla.sh
 #    split its 220 routes into routes/bench2drive220/.
 bash scripts/setup_bench2drive.sh
 
+# 2b. FAIL2DRIVE ONLY. The leaderboard and the 200 routes are already vendored at third_party/fail2drive/;
+#     this installs what git cannot carry: F2D's OWN CARLA build (12.8 GB download, ~30 GB on disk,
+#     resumable -- run it under tmux) and the 12 speed-limit .npy maps srunner loads at runtime.
+#     LOOK FOR AN EXISTING INSTALL FIRST and point F2D_CARLA_ROOT at it; the script then only
+#     verifies it. A stock CARLA 0.9.15 will NOT do and will NOT error -- see benchmark/PROTOCOL.md.
+export F2D_CARLA_ROOT=$HOME/f2d_carla
+bash scripts/setup_fail2drive.sh
+
 # 3. Python 3.10 venv (.venv) with pinned deps, and PYTHONPATH for the leaderboard. Works from bash
-#    or zsh. The first run installs; later runs are a fast no-op.
-source scripts/env.sh
+#    or zsh. The first run installs; later runs are a fast no-op. BENCHMARK picks which leaderboard
+#    and CARLA build go on the path; re-sourcing with a different value in the same shell is safe.
+source scripts/env.sh                            # bench2drive (default)
+BENCHMARK=fail2drive source scripts/env.sh       # fail2drive
 
 # 4. Offline tests (unit + fake-simulator sessions for both tracks; no GPU needed).
 pytest
@@ -68,7 +89,10 @@ pytest
 
 **Pass:** `env.sh` prints `env ready` (the first run also lists `ok: carla_probe.agent`), `pytest`
 passes, `routes/bench2drive220/route_25378.xml` exists, and
-`ls $CARLA_ROOT/CarlaUE4/Content/Carla/Maps/Town12` shows files.
+`ls $CARLA_ROOT/CarlaUE4/Content/Carla/Maps/Town12` shows files. For Fail2Drive,
+`setup_fail2drive.sh` ends with `COMPLETE: 12 speed-limit maps` and lists six non-empty asset
+packs, and `BENCHMARK=fail2drive source scripts/env.sh` prints
+`env ready (BENCHMARK=fail2drive, ...)`.
 
 **A `.venv` whose interpreter has vanished** looks like a missing venv but is not: `uv` creates it
 with a *managed* CPython under `~/.local/share/uv/python/`, and `.venv/bin/python` is a symlink into
@@ -137,6 +161,32 @@ New session: `ACCESS=sensors bash scripts/run_session.sh 25378 > /tmp/session.ou
 | 7 | drive to the end with route points + cameras | `lateral_offset_m` stays within ~1 m on straight road; `route_end`; launcher exits 0 | |
 
 Between sessions, if a CARLA or evaluator process is left behind: `bash scripts/clean_carla.sh 20000`.
+
+### 3.3 Fail2Drive smoke run
+
+Only after §3.1/§3.2 pass: this checks the *second* benchmark, not the daemon. It uses
+`Base_BadParking_0000`, the `f2d_pair` route. Everything above still applies; what follows is what
+is different, and what a wrong F2D install looks like.
+
+```bash
+BENCHMARK=fail2drive source scripts/env.sh
+BENCHMARK=fail2drive ACCESS=privileged bash scripts/run_session.sh Base_BadParking_0000 \
+    > /tmp/f2d_session.out 2>&1 &
+python -m carla_probe.client --wait 900 status
+```
+
+Expect a **long load**: all 200 F2D routes are Town13, a large map, so several minutes before the
+daemon answers -- much longer than Town03. Raise `--wait` rather than assuming a hang.
+
+| # | check | pass | if it fails, look at |
+|---|---|---|---|
+| 1 | `sessions/<...>/evaluator.log` right after launch | `WARNING: Simulator API version = 0.9.15.2-dirty`. This warning is **wanted**: a stock 0.9.15 reports exactly `0.9.15` and prints nothing, so a silent connect means you are on the wrong CARLA and every novel-asset scenario is quietly spawning default blueprints | `F2D_CARLA_ROOT`; re-run `scripts/setup_fail2drive.sh` |
+| 2 | `python -c "import leaderboard; print(leaderboard.__file__)"` | under `third_party/fail2drive/`, **not** `third_party/Bench2Drive/` | `env.sh`'s PYTHONPATH filter; a shell that sourced the other benchmark and was not re-sourced |
+| 3 | `status` | `ok: true`, `step: 0`, `access: privileged`, `score` not null | as §3.1 step 1, but `grep -n "probe:" third_party/fail2drive/leaderboard/leaderboard/leaderboard_evaluator.py` to confirm the tree is the adapted one |
+| 4 | `observe` | `nav.route_points_ego` has **few, widely spaced** points -- this is correct on F2D (200 m downsample on a ~200 m route), not a bug | |
+| 5 | drive to the end as in §3.1 step 8 | `route_end`, a record in `result.json`, launcher exits 0 | `FileNotFoundError: ..._speed_limits.npy` means step 2/2 of the setup script never ran: srunner loads those on every route |
+| 6 | `python tools/f2d_score.py sessions/<...>` | a table naming split `Base`, scenario `BadParking`, class `Visual-lat`; coverage `1/100 Base + 0/100 Generalization`; the drop printed as **`n/a`**, not a number | `route not in the Fail2Drive split`: the route id did not resolve -- check `session.json`'s `route` and the record's `route_id` |
+| 7 | then the twin, `Generalization_BadParking_1000`, and score both together | coverage `1/100 + 1/100, 1/100 complete pairs` and a real drop % | |
 
 ## 4. Run an eval
 

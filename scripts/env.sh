@@ -73,11 +73,17 @@ case "$BENCHMARK" in
             return 1
         fi
         # srunner loads these at runtime on every route; missing => FileNotFoundError per route.
-        if [ "$(ls "$SCENARIO_RUNNER_ROOT"/speed_limits/*_speed_limits.npy 2>/dev/null | wc -l)" -lt 12 ]; then
+        # find, not a glob: this file is sourced from bash AND zsh, and an unmatched glob behaves
+        # differently in each (zsh errors outright) -- in exactly the case being checked for.
+        _probe_npy=$(find "$SCENARIO_RUNNER_ROOT/speed_limits" -maxdepth 1 \
+                     -name '*_speed_limits.npy' 2>/dev/null | wc -l)
+        if [ "${_probe_npy:-0}" -lt 12 ]; then
             echo "ERROR: Fail2Drive speed-limit maps missing from $SCENARIO_RUNNER_ROOT/speed_limits" >&2
             echo "       Run:  bash scripts/setup_fail2drive.sh" >&2
+            unset _probe_npy
             return 1
         fi
+        unset _probe_npy
         ;;
     *)
         echo "ERROR: BENCHMARK must be bench2drive or fail2drive, got '$BENCHMARK'" >&2
@@ -102,11 +108,27 @@ source "$VENV_DIR/bin/activate"
 # Drop BOTH benchmark trees from an inherited PYTHONPATH before prepending this one's: a stale
 # entry for the other fork would resolve `leaderboard` / `srunner` to the wrong benchmark without
 # raising, and score the route under the other one's rules.
-PYTHONPATH="$(printf '%s' "${PYTHONPATH:-}" | tr ':' '\n' \
-    | grep -vxF "$B2D_ROOT/leaderboard" | grep -vxF "$B2D_ROOT/scenario_runner" \
-    | grep -vxF "$F2D_ROOT/leaderboard" | grep -vxF "$F2D_ROOT/scenario_runner" \
-    | grep -vxF "$REPO_ROOT" | grep -vx '' | paste -sd: -)"
-export PYTHONPATH="$REPO_ROOT:$LEADERBOARD_ROOT:$SCENARIO_RUNNER_ROOT:$CARLA_ROOT/PythonAPI/carla${PYTHONPATH:+:$PYTHONPATH}"
+#
+# Pure parameter expansion, no pipeline: this file is SOURCED, so a `grep` that matches nothing
+# would abort a caller running under `set -e -o pipefail` (scripts/run_session.sh does) -- and an
+# empty inherited PYTHONPATH, the common case, is exactly that.
+_probe_keep=""
+_probe_rest="${PYTHONPATH:-}"
+while [ -n "$_probe_rest" ]; do
+    _probe_head="${_probe_rest%%:*}"
+    case "$_probe_rest" in
+        *:*) _probe_rest="${_probe_rest#*:}" ;;
+        *)   _probe_rest="" ;;
+    esac
+    case "$_probe_head" in
+        "" | "$REPO_ROOT" \
+           | "$B2D_ROOT/leaderboard" | "$B2D_ROOT/scenario_runner" \
+           | "$F2D_ROOT/leaderboard" | "$F2D_ROOT/scenario_runner") continue ;;
+    esac
+    _probe_keep="${_probe_keep:+$_probe_keep:}$_probe_head"
+done
+export PYTHONPATH="$REPO_ROOT:$LEADERBOARD_ROOT:$SCENARIO_RUNNER_ROOT:$CARLA_ROOT/PythonAPI/carla${_probe_keep:+:$_probe_keep}"
+unset _probe_keep _probe_rest _probe_head
 
 if python - <<'PY' 2>/dev/null
 import importlib.util as u, sys

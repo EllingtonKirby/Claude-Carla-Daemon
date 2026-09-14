@@ -44,6 +44,15 @@ echo "    simulator:    $F2D_CARLA_ROOT"
 echo "    staging:      $STAGE_DIR"
 echo "    speed limits: $SPEED_LIMITS_DST"
 
+# `ls glob | wc -l` is not usable here: under `set -o pipefail` a glob that matches nothing makes
+# ls exit non-zero, which fails the whole pipeline and, under `set -e`, the script -- which is
+# exactly the state this counts (none installed yet).
+count_speed_limits() {
+    local n=0 f
+    for f in "$SPEED_LIMITS_DST"/*_speed_limits.npy; do [ -f "$f" ] && n=$((n + 1)); done
+    printf '%s' "$n"
+}
+
 report_packs() {
     local pack n
     for pack in "${F2D_ASSET_PACKS[@]}"; do
@@ -103,7 +112,7 @@ fi
 # background_activity.py (which runs on every route), timer.py and atomic_behaviors.py. Missing =>
 # every route dies with FileNotFoundError. 75 MB, so they are gitignored rather than vendored.
 mkdir -p "$SPEED_LIMITS_DST"
-have=$(ls "$SPEED_LIMITS_DST"/*_speed_limits.npy 2>/dev/null | wc -l)
+have=$(count_speed_limits)
 if [ "$have" -ge 12 ]; then
     echo "==> [2/2] speed-limit maps already present ($have). Skipping."
 else
@@ -114,7 +123,7 @@ else
         [ -n "$u" ] || continue
         wget -q --show-progress -N -P "$SPEED_LIMITS_DST" "$u" || exit 1
     done
-    have=$(ls "$SPEED_LIMITS_DST"/*_speed_limits.npy 2>/dev/null | wc -l)
+    have=$(count_speed_limits)
     [ "$have" -ge 12 ] || {
         echo "ERROR: only $have/12 speed-limit maps present in $SPEED_LIMITS_DST" >&2
         echo "       They can also be regenerated against a running CARLA:" >&2
@@ -122,7 +131,7 @@ else
         exit 1; }
 fi
 
-echo "=== COMPLETE: $(ls "$SPEED_LIMITS_DST"/*_speed_limits.npy | wc -l) speed-limit maps, CARLA at $F2D_CARLA_ROOT"
+echo "=== COMPLETE: $(count_speed_limits) speed-limit maps, CARLA at $F2D_CARLA_ROOT"
 echo "    next:  BENCHMARK=fail2drive F2D_CARLA_ROOT=$F2D_CARLA_ROOT source scripts/env.sh"
 echo "    Fail2Drive is MIT. Its routes, scenarios and assets are a HELD-OUT test set:"
 echo "    never train or tune on them (benchmark/PROTOCOL.md)."

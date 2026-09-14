@@ -104,6 +104,48 @@ Applied to Bench2Drive 0.0.4 by `scripts/setup_bench2drive.sh`. It touches only 
 
 With those variables unset, scoring semantics are stock Bench2Drive.
 
+## The vendored Fail2Drive tree (`third_party/fail2drive/`)
+
+Fail2Drive is MIT, so unlike Bench2Drive it is **vendored rather than fetched and patched**: the
+probe's changes are an ordinary diff in git history (`git log -p third_party/fail2drive/`) instead of a
+patch file. `third_party/fail2drive/VENDORED.md` pins the upstream commit and records what was left out
+and why. `scripts/setup_fail2drive.sh` installs the two pieces git cannot carry: the F2D CARLA
+build (12.8 GB download, ~30 GB installed) and `scenario_runner/speed_limits/*.npy` (75 MB).
+
+F2D's `scenario_runner` has diverged from Bench2Drive's -- new scenario classes, scenarios embedded
+in the route XMLs, a different success rule -- so it is a sibling tree, never a merge. Both forks
+ship packages literally named `leaderboard` and `srunner`, and importing the wrong one does **not**
+raise; it silently scores the route under the other benchmark's rules. `scripts/env.sh` therefore
+*removes* the other fork from `PYTHONPATH` rather than putting this one first.
+
+Changes to the vendored tree, each marked `# probe:` in place:
+
+| file | change | why |
+|---|---|---|
+| `leaderboard_evaluator.py` | `torch` becomes an optional import | stock F2D imports it at module scope only to seed it; the probe driver is not a torch model and `env.sh` does not install torch |
+| | `agent.destroy(results)`; `_register_statistics` returns the record | final record reaches the agent |
+| | `agent.set_scenario(route_scenario)` | privileged live score |
+| | with `--record`, writes `<route>_rep<i>.json` next to the recording | maps agent steps to replay time (`tools/replay_sim.py`) |
+| | the world load drops to async mode, restoring sync right after | libcarla crashes loading a Large Map in sync mode on some hosts, and **all 200 F2D routes are Town13** |
+| | world settings are not reset on exit | keeps a reused server in sync mode |
+| | accepts `--gpu-rank`, ignored | B2D's evaluator spawns its own CARLA and needs it; F2D's does not. Keeps `run_session.sh` one code path |
+| `autonomous_agent.py` | back-ports `get_hero()` from B2D's fork | `agent.py` resolves the ego through it on the privileged track |
+| `route_scenario.py` | `AGENT_BLOCKED_MIN_SPEED` / `AGENT_BLOCKED_MAX_TIME` env (defaults 0.1 m/s, 180 s = F2D's own values) | analysis runs only |
+| `scenario_manager.py` | `AGENT_MAX_TICKS` env (unset = no cap) | analysis runs only. Stock F2D has **no** tick cap; B2D's fork caps hard at 4000 |
+| `atomic_behaviors.py` | `AGENT_SCENARIO_TIMEOUT` env cap (unset = stock) | analysis runs only |
+
+With those variables unset, scoring semantics are stock Fail2Drive.
+
+**Deliberately not back-ported: the 50 m global-plan downsample.** B2D's fork calls
+`downsample_route(plan, 50)`, F2D's calls it with `200` -- a maximum distance between plan points,
+so the sensors-track driver sees a much coarser route on F2D. Matching B2D would make the two
+benchmarks' sensors numbers comparable to each other, at the cost of making F2D numbers
+incomparable with its public leaderboard, which is the comparison that matters for a held-out
+benchmark. The single-line change is in `autonomous_agent.set_global_plan` if that trade is ever
+worth revisiting; it would be a deviation to record next to any result.
+
+`get_metric_info()` is the other B2D addition, and is **not** back-ported: nothing here calls it.
+
 ## Known limitations
 
 - **No seek or rewind.** CARLA has no full-state snapshot. Traffic is seeded (`TM_SEED`) but not
@@ -117,7 +159,13 @@ With those variables unset, scoring semantics are stock Bench2Drive.
 - **Maps.** 7 of the dev10 routes need the Town11–15 additional maps (`setup_carla.sh` installs
   them). Some installs lack Town14.
 - **No reverse.** Controls are steer / throttle / brake only, so an ego stopped nose-first against a
-  wall, fence or vehicle cannot back out.
+  wall, fence or vehicle cannot back out. Fail2Drive's `Wall` and `FullyBlocked` scenarios are
+  built around obstacles a driver may need to reverse away from, so this limitation bites hardest
+  there.
+- **Fail2Drive's sensors-track route plan is coarse.** 200 m between plan points against routes
+  whose median length is 211 m, so a typical route's plan is little more than its start and end,
+  plus whatever the downsampler adds at junctions. This is stock F2D (see above), but it means the
+  sensors track leans much harder on the cameras there than it does on Bench2Drive.
 - **The privileged scene has no static layout.** Fences, poles, walls and curbs are not in
   `observe`, `get_state` or the BEV, and junction polygons only approximate the paved area. At
   junction corners, check the cameras.

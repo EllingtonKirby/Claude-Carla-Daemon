@@ -230,7 +230,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         return specs
 
     def set_global_plan(self, global_plan_gps, global_plan_world_coord) -> None:
-        # Bench2Drive's evaluator calls this BEFORE setup (the access level is not known yet), so the
+        # Both evaluators call this BEFORE setup (the access level is not known yet), so the
         # route is built by whichever of the two runs last.
         super().set_global_plan(global_plan_gps, global_plan_world_coord)
         self._dense_world_plan = global_plan_world_coord
@@ -241,7 +241,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         pts: List[Tuple[float, float]] = []
         opts: List[str] = []
         if self._sensors_only:
-            # Only what a SENSORS-track agent is given: the base class's downsampled GPS plan. The
+            # Only what a SENSORS-track agent is given: the base class's downsampled GPS plan --
+            # a point at most every `sample_factor` metres, which is the benchmark's own choice
+            # (Bench2Drive 50 m, Fail2Drive 200 m: see docs/DESIGN.md). The
             # town geo reference comes from its first point, which the leaderboard provides in both
             # GPS and world form; the route is then projected through the SAME conversion as the
             # ego's GNSS so both live in one frame.
@@ -250,7 +252,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             self._lat_ref, self._lon_ref = geo.solve_geo_reference(first_loc.x, first_loc.y, first_gps["lat"], first_gps["lon"])
             source = [(geo.gps_to_world(g["lat"], g["lon"], self._lat_ref, self._lon_ref), o) for g, o in self._global_plan]
         else:
-            # Privileged: the DENSE world-coordinate route (the base class keeps a 50 m downsample).
+            # Privileged: the DENSE world-coordinate route, identical on both benchmarks (only the
+            # base class's own copy is downsampled).
             source = [((float(t.location.x), float(t.location.y)), o) for t, o in self._dense_world_plan]
         for p, option in source:
             if pts and math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) < 0.05:
@@ -308,7 +311,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         if self._sensors_only:
             self._ego = self._estimate_pose(input_data, speed)
         else:
-            if self.hero_actor is None:
+            # getattr, not attribute access: Bench2Drive's base class resolves hero_actor in
+            # __init__ so it always exists, Fail2Drive's never sets it at all.
+            if getattr(self, "hero_actor", None) is None:
                 self.get_hero()
             tf = self.hero_actor.get_transform()
             self._ego = {"x": float(tf.location.x), "y": float(tf.location.y), "yaw": float(tf.rotation.yaw), "speed": speed}
