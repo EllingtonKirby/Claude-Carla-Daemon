@@ -67,9 +67,6 @@ if command -v uv >/dev/null 2>&1; then PIP=(uv pip install); else PIP=(python -m
 # setuptools<81 still ships pkg_resources, which the leaderboard imports. numpy<2 is required by
 # the carla-era opencv wheel; this exact set is the one the probe daemon was validated with.
 "${PIP[@]}" 'setuptools<81' 'numpy==1.26.4' 'opencv-python-headless==4.5.4.58' 'shapely==2.0.6' pyyaml pytest || return 1
-# The benchmark driver (carla_probe/drive_loop.py) talks to the Messages API. Unpinned on purpose: it
-# is not part of the simulation stack, and the loop uses beta features that move forward.
-"${PIP[@]}" anthropic || return 1
 # Bench2Drive structural deps (scenario_runner needs these exact APIs).
 "${PIP[@]}" py-trees==0.8.3 xmlschema==1.0.18 dictor requests pygame tabulate pexpect transforms3d \
     networkx ephem simple-watchdog-timer six psutil || return 1

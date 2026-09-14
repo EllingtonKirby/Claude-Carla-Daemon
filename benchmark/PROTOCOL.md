@@ -39,22 +39,14 @@ it adds no information beyond what the sensors show.
    `scripts/run_eval.sh <id> <track> <model>` (`docs/HANDOFF.md` §4), which uses a fresh session
    directory and a driver whose reach is limited to the probe protocol. Never reuse a session dir
    (the leaderboard would skip the route). Runs driven interactively are not benchmark results.
-2. **The driver harness is part of the benchmark definition.** `run_eval.sh` offers two, selected
-   with `DRIVER=`. They are different configurations: report which one, and never average or
-   directly compare their scores.
-   - `claude_p` (default): the original `claude -p` driver, which runs on whatever the `claude` CLI
-     is logged in to — normally a Claude subscription, in which case the reported `total_cost_usd`
-     is an API-equivalent figure rather than a bill. Being a general-purpose agent with Bash and
-     Read, it needs the driver sandbox and the pre-flight isolation check, both of which
-     `run_eval.sh` applies.
-   - `drive_loop`: `carla_probe/drive_loop.py`, a loop on the Messages API whose entire
-     action space is the probe tools. It has no filesystem access, so rule 7 holds by construction
-     rather than by enforcement. Its system prompt and tool schemas ARE the definition: both are
-     snapshotted into the session (`prompt.txt`, `tools.json`) and hashed into `driver.json` as
-     `definition_sha256`. Report `PROMPT_VARIANT` -- `baseline` is the headline configuration;
-     `guided` adds driving guidance and is an intervention under test, not the reference. It always
-     bills Anthropic API usage: there is no supported route from programmatic code to a
-     subscription.
+2. **The driver harness is part of the benchmark definition.** The driver is `claude -p` with the
+   canonical prompt in `run_eval.sh`, which is hashed into `driver.json` as `prompt_sha256`:
+   changing the prompt, the documents it points at, or the daemon's command surface makes results
+   non-comparable, so report the repo commit alongside every score. It runs on whatever the
+   `claude` CLI is logged in to — normally a Claude subscription, in which case the reported
+   `total_cost_usd` is an API-equivalent figure rather than a bill. Being a general-purpose agent
+   with Bash and Read, it needs the driver sandbox and the pre-flight isolation check, both of
+   which `run_eval.sh` applies.
 3. **One attempt per route.** Report crashed or aborted sessions as failures (DS 0); do not rerun
    until you get a good one.
 4. **Fixed settings:** `TM_SEED=0`, the default `carla_probe/config.yaml` apart from `access`,
@@ -83,8 +75,8 @@ The summary groups means by track. Report for each route: DS (driving score), RC
 completion), IS (infraction penalty), status, scored infractions, plus `cmds` (commands sent) and
 `wall s` (session wall-clock time). Report the mean DS / RC / IS per track. Include the track, the
 model name, the repo commit (in each `session.json`) and the CARLA version, plus the driver
-harness and, for `drive_loop`, the prompt variant and `definition_sha256` (all in `driver.json`) --
-two runs of the same model under different harnesses are not the same measurement.
+`prompt_sha256` from `driver.json` -- two runs of the same model under different harnesses are not
+the same measurement.
 
 **Caveat on reproducibility:** the traffic manager is seeded, but CARLA traffic is not bit-exact
 across runs, and traffic *reacts to the ego*, so different driving produces different traffic.

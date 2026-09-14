@@ -4,13 +4,12 @@
     python tools/cost_report.py SESSION_DIR...            # markdown table
     python tools/cost_report.py SESSION_DIR... --json
 
-Reads either driver's accounting and reports the same columns for both, so a `drive_loop` run and
-a `claude -p` run can be put side by side:
+Reads `driver_transcript.jsonl`: the stream's final `result` row, which carries Claude Code's own
+totals. (Assistant messages repeat their usage as a turn streams, so summing them over-counts by
+3-5x -- use the result row, not the messages.)
 
-  drive_loop  `driver_loop.jsonl`: one `turn` row per API response, with that turn's usage.
-  claude_p    `driver_transcript.jsonl`: the stream's final `result` row, which carries Claude
-              Code's own totals. (Assistant messages repeat their usage as a turn streams, so
-              summing them over-counts by 3-5x -- use the result row, not the messages.)
+The dollar figures are API-equivalent: a run billed to a Claude subscription is metered against a
+usage allowance, not invoiced, so compare token counts and read the money column as a proxy.
 
 The last column is the plan's §0.3 cost model. Cost goes roughly as k * turns**2 when nothing is
 ever evicted from context: context grows linearly with turns and every turn re-reads all of it.
@@ -27,10 +26,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# USD per million tokens. Verified against a recorded `claude -p` run: its result row's token
-# breakdown priced with this table reproduces Claude Code's own total_cost_usd to the cent.
-# cache_write is TTL-dependent (5 min ~1.25x input, 1 h 2x); `claude -p` writes 1 h, drive_loop
-# takes the 5 min default, so a like-for-like comparison should say which each used.
+# USD per million tokens. Verified against a recorded run: its result row's token breakdown priced
+# with this table reproduces Claude Code's own total_cost_usd to the cent. cache_write is
+# TTL-dependent (5 min ~1.25x input, 1 h 2x); `claude -p` writes 1 h.
 PRICES: Dict[str, Dict[str, float]] = {
     "claude-opus-5":  {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write_1h": 10.0, "cache_write_5m": 6.25},
     "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write_1h": 4.0, "cache_write_5m": 2.50},
@@ -52,27 +50,7 @@ def _empty() -> Dict[str, int]:
     return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
 
-def _read_drive_loop(session: Path) -> Optional[Dict[str, Any]]:
-    log = session / "driver_loop.jsonl"
-    if not log.is_file():
-        return None
-    rows = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
-    turns = [r for r in rows if r.get("event") == "turn"]
-    usage, per_turn_input = _empty(), []
-    for r in turns:
-        for k in usage:
-            usage[k] += r["usage"].get(k) or 0
-        per_turn_input.append(sum((r["usage"].get(k) or 0) for k in ("input", "cache_read", "cache_write")))
-    start = next((r for r in rows if r.get("event") == "start"), {})
-    end = next((r for r in reversed(rows) if r.get("event") == "end"), {})
-    tools = [r for r in rows if r.get("event") == "tool"]
-    return {"driver": "drive_loop", "model": start.get("model"), "turns": len(turns),
-            "decisions": len([t for t in tools if t.get("why")]), "tool_calls": len(tools),
-            "usage": usage, "ttl": "5m", "avg_context": _mean(per_turn_input),
-            "stop_reason": end.get("reason"), "prompt": start.get("prompt")}
-
-
-def _read_claude_p(session: Path) -> Optional[Dict[str, Any]]:
+def _read_run(session: Path) -> Optional[Dict[str, Any]]:
     log = session / "driver_transcript.jsonl"
     if not log.is_file():
         return None
@@ -99,10 +77,9 @@ def _read_claude_p(session: Path) -> Optional[Dict[str, Any]]:
              "cache_read": u.get("cache_read_input_tokens", 0),
              "cache_write": u.get("cache_creation_input_tokens", 0)}
     ttl = "1h" if (u.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") else "5m"
-    return {"driver": "claude_p", "model": next(iter(models), None), "turns": result.get("num_turns"),
-            "decisions": None, "tool_calls": None, "usage": usage, "ttl": ttl,
-            "avg_context": _mean(per_turn_input), "reported_cost": result.get("total_cost_usd"),
-            "stop_reason": None, "prompt": None}
+    return {"model": next(iter(models), None), "turns": result.get("num_turns"),
+            "decisions": None, "usage": usage, "ttl": ttl, "avg_context": _mean(per_turn_input),
+            "reported_cost": result.get("total_cost_usd")}
 
 
 def _mean(xs: List[int]) -> Optional[float]:
@@ -119,10 +96,10 @@ def _decisions(session: Path) -> Optional[int]:
 
 
 def collect(session: Path) -> Dict[str, Any]:
-    row = _read_drive_loop(session) or _read_claude_p(session) or {"driver": None}
+    row = _read_run(session) or {}
     row["session"] = session.name
     row["decisions"] = row.get("decisions") or _decisions(session)
-    if row.get("driver"):
+    if row.get("model"):
         row["cost_usd"] = _price(row["model"] or "", row["usage"], row["ttl"])
         # Claude Code reports its own total; if ours disagrees the price table is stale.
         if row.get("reported_cost") and row.get("cost_usd"):
@@ -154,14 +131,14 @@ def main() -> int:
         print(json.dumps(rows, indent=2))
         return 0
 
-    head = ["session", "driver", "model", "turns", "decisions", "turns/dec", "avg ctx",
+    head = ["session", "model", "turns", "decisions", "turns/dec", "avg ctx",
             "cache read", "output", "cost $", "k x1e-4", "DS"]
     print("| " + " | ".join(head) + " |")
     print("|" + "|".join("---" for _ in head) + "|")
     for r in rows:
         u = r.get("usage") or {}
         print("| " + " | ".join(str(v) for v in [
-            r["session"], r.get("driver") or "?", (r.get("model") or "?").replace("claude-", ""),
+            r["session"], (r.get("model") or "?").replace("claude-", ""),
             r.get("turns") or "?", r.get("decisions") or "?",
             f"{r['turns_per_decision']:.1f}" if r.get("turns_per_decision") else "?",
             f"{r['avg_context']/1000:.0f}k" if r.get("avg_context") else "?",
