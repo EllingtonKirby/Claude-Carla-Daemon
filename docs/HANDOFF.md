@@ -147,15 +147,9 @@ Between sessions, if a CARLA or evaluator process is left behind: `bash scripts/
   reviewed as part of the result (§5.3).
 - Fixed settings: `TM_SEED=0`, default `carla_probe/config.yaml` except `access`, `AGENT_MAX_TICKS`
   unset. Report any deviation.
-- The driver harness is part of the definition. `DRIVER=claude_p` (default) is the original
-  `claude -p` driver; `DRIVER=drive_loop` is the bespoke loop. Their numbers are separate
-  baselines, never averaged. For `drive_loop`, report `PROMPT_VARIANT` too (`baseline` is the
-  headline; `guided` is an intervention under test).
-- **How runs are paid for.** `claude_p` shells out to the `claude` CLI and so runs on whatever that
-  is logged in to, normally a Claude subscription. `drive_loop` calls the Messages API and always
-  bills API usage — there is no supported route from programmatic code to a subscription (the Agent
-  SDK is explicitly directed to API keys too). That is why `claude_p` is the default. It also means
-  a subscription-backed run's `total_cost_usd` is an API-equivalent figure, not a bill: what binds
+- **How runs are paid for.** The driver is `claude -p`, so a run is billed to whatever the `claude`
+  CLI is logged in to, normally a Claude subscription. A subscription-backed run's
+  `total_cost_usd` is then an API-equivalent figure computed at list price, not a bill: what binds
   is the usage allowance, so compare token counts and treat dollars as a proxy.
 - The driver uses only the probe protocol: no route XMLs, scenario or simulator code, logs, config
   edits or human hints. On the sensors track it may open only files whose paths the daemon returns.
@@ -171,34 +165,24 @@ bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> > /tmp/eval_<RO
 ```
 
 It blocks until the route is scored, so run it in the background and read its output file for
-progress. `drive_loop` needs Anthropic API credentials in the environment (`ANTHROPIC_API_KEY`, or
-an `ant auth login` profile — that profile is developer-platform OAuth, so it bills API usage like
-a key does); `run_eval.sh` checks the SDK is installed before launching CARLA, but a missing
-credential only surfaces on the driver's first request. A Claude Code background task is killed with its session, taking CARLA and the driver
+progress. A Claude Code background task is killed with its session, taking CARLA and the driver
 down mid-route with no score. For runs that may outlive your session, detach it:
 `setsid nohup bash scripts/run_eval.sh ... > /tmp/eval.out 2>&1 < /dev/null &`. After a kill, run
 `bash scripts/clean_carla.sh <CARLA_PORT>`, and report the run as aborted (`benchmark/PROTOCOL.md`
 rule 2). Env overrides: `GPU_RANK`, `CARLA_PORT`,
 `PROBE_PORT` (for parallel runs), `SIM_RECORD`, `RECORD_CAMERA_EVERY` (§5.1), `LOAD_TIMEOUT_S`,
-`DRIVER`, `PROMPT_VARIANT`, `EFFORT`, `KEEP_IMAGES`, `ISOLATION_CHECK=0`, `CHECK_MODEL`. What it
+`AUTOCOMPACT`, `ISOLATION_CHECK=0`, `CHECK_MODEL`. What it
 does:
 
 1. Launches `scripts/run_session.sh` into a fresh `sessions/<stamp>_route_<id>_<track>/` and waits
    until the route is loaded and paused, checking the reported `access`.
-2. Runs the driver, recording what it is into `driver.json`, and streams its output into the
-   session directory (`driver_loop.jsonl`, or `driver_transcript.jsonl` for `claude_p`).
+2. Runs the driver, recording what it is into `driver.json`, and streams its transcript into
+   `driver_transcript.jsonl`.
 3. If the driver exits while the route is still running, aborts the session with `shutdown` (an
    agent failure) and records `driver_stopped_before_route_end` in `driver.json`. Then it waits
    for scoring and prints the summary.
 
-**The two drivers.** `DRIVER=drive_loop` runs `carla_probe/drive_loop.py`: a purpose-built
-loop on the Messages API whose entire action space is the probe tools. It cannot open a file, so
-PROTOCOL rule 7 holds by construction, and it needs no sandbox. Its system prompt and tool schemas
-are the benchmark definition — snapshotted to the session as `prompt.txt` / `tools.json` and hashed
-into `driver.json`.
-
-`DRIVER=claude_p` (the default) runs the original `claude -p` driver. It is a general-purpose agent
-with Bash and Read, so `run_eval.sh` additionally builds
+**The driver** is a general-purpose agent with Bash and Read, so `run_eval.sh` builds
 it a sandbox (fresh empty directory outside the repo, Claude Code sandbox off, no user/project
 settings, tools limited to Bash and Read, `dontAsk` permissions allowing only the probe client,
 reads under the session's `frames/` and the three driver documents; session files, routes and
@@ -242,7 +226,6 @@ may open none of it except the images the daemon returns (the eval sandbox enfor
 | `frames/frame_<step>/` | daemon | every image the driver requested (`percept`, `render_bev`, `dump_frame`) |
 | `camera_log/step_<step>.jpg` | daemon | periodic frames from `record.camera_id`, when `RECORD_CAMERA_EVERY=N` is set (or the driver used `record`) |
 | `evaluator.log`, `carla.log`, `launcher.log`, `probe_done.json` | leaderboard, CARLA, launcher, daemon | per-criterion table at route end, crashes, launch progress, final status |
-| `driver_loop.jsonl` | `carla_probe/drive_loop.py` | one row per tool call from the bespoke driver loop: tool, `why`, outcome, step, route progress, and the turn's token usage split into cache reads / writes. Only written by that loop, not by `run_eval.sh` |
 | `driver.json`, `prompt.txt`, `settings.json` | `run_eval.sh` | model, Claude Code version, prompt hash, start/end, driver exit code, whether it stopped before the route ended; the exact prompt and sandbox |
 | `driver_transcript.jsonl`, `driver_stderr.log` | `run_eval.sh` | the driver's full stream: reasoning text, every tool call and result (images inline as base64), token usage |
 
@@ -282,10 +265,10 @@ are in command order.
   ego's position against `recorder_truth.json` over a range of lags. Prints the best lag and the
   mean error; aligned means best lag 0 at ~0.00 m. Run it after touching the replay path.
 - `python tools/cost_report.py SESSION_DIR...`: turns, decisions, turns-per-decision, average
-  context, tokens by class, cost and the §0.3 cost model constant `k = cost / turns**2`, for either
-  driver (`driver_loop.jsonl` turn rows, or `claude -p`'s final `result` row — assistant messages
-  repeat their usage as a turn streams, so summing those over-counts 3-5x). It warns if its price
-  table drifts more than 1% from what a run itself reported.
+  context, tokens by class, cost and the cost-model constant `k = cost / turns**2`, from the
+  transcript's final `result` row (assistant messages repeat their usage as a turn streams, so
+  summing those over-counts 3-5x). It warns if its price table drifts more than 1% from what a run
+  itself reported. Dollars are API-equivalent, not a bill — see §4.1.
 - `python tools/make_video.py SESSION_DIR`: mp4 from `camera_log/`.
 - Videos (`--video`, `make_video.py`) are H.264 (`yuv420p`) encoded by ffmpeg, so they play in browsers and
   common players. Replays run at real time (10 fps with `--every 2`).

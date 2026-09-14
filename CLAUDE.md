@@ -18,13 +18,13 @@ or after changing `agent.py`, `config.yaml` or the patch), evals, and recording.
   `tools/` offline analysis, never on the path of a run.
 - `carla_probe/agent.py` runs inside the leaderboard process and needs carla/leaderboard/srunner.
   `geometry.py`, `pid.py`, `bev.py`, `server.py` and `client.py` do not, and are unit-tested in
-  `tests/` (`pytest`, no simulator). `drive_loop.py` needs only `anthropic` plus `client.py`, and is
-  tested there with the API and the daemon stubbed.
+  `tests/` (`pytest`, no simulator).
 - Keep `client.py` pure stdlib.
-- `carla_probe/drive_loop.py` is the benchmark driver: its system prompt and tool schemas ARE part
-  of the benchmark definition (hashed into `driver.json`), so changing either makes results
-  non-comparable. Driving guidance belongs in the `guided` prompt variant, which is an intervention
-  under test — never in `baseline`, the headline configuration.
+- The driver is `claude -p`, launched by `run_eval.sh`, so runs are billed to whatever the `claude`
+  CLI is logged in to — normally a Claude subscription. A bespoke Messages-API driver existed
+  briefly (`carla_probe/drive_loop.py`, removed 2026-09-14) and is recoverable from git history:
+  don't rebuild one without an API key and a decision to fund runs that way. A subscription-backed
+  run's `total_cost_usd` is an API-equivalent figure, not a bill.
 - Every config knob lives in `carla_probe/config.yaml` and is read with `cfg["key"]`: no code-side
   defaults.
 - Access levels (`access: privileged | sensors`) are enforced in `agent.py`. Any new command or
