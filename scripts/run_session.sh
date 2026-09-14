@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Launch one probe session: a CARLA server + the Bench2Drive leaderboard running the probe agent on
-# ONE route. The sim pauses on its first tick and waits for commands on the probe socket.
+# Launch one probe session: a CARLA server + a leaderboard running the probe agent on ONE route.
+# The sim pauses on its first tick and waits for commands on the probe socket.
 #
-#   bash scripts/run_session.sh <ROUTE_ID | ROUTE_XML> [SESSION_DIR]
+#   bash scripts/run_session.sh <ROUTE | ROUTE_XML> [SESSION_DIR]
 #   bash scripts/run_session.sh 2091                         # routes/bench2drive220/route_2091.xml
 #   ACCESS=sensors bash scripts/run_session.sh 2091          # Bench2Drive-eligible sensors only
+#   BENCHMARK=fail2drive bash scripts/run_session.sh Base_Animals_0075     # by route name
+#   BENCHMARK=fail2drive bash scripts/run_session.sh 75                    # or by route id
 #
 # Then drive it (after ~1-3 min of CARLA + route loading):
 #   python -m carla_probe.client --wait 600 status
@@ -14,11 +16,16 @@
 #   decisions.jsonl/.txt, score_events.jsonl, trajectory.jsonl, evaluator.log, carla.log, frames/,
 #   camera_log/, config.yaml (snapshot), session.json (launch metadata). See docs/HANDOFF.md §5.
 #
-# Env: ACCESS (privileged | sensors; default = the config's `access`)
-#      CARLA_ROOT ($HOME/carla)  GPU_RANK (0)  CARLA_PORT (20000)  TM_PORT (CARLA_PORT+20000)
+# Env: BENCHMARK (bench2drive | fail2drive) selects the leaderboard, the CARLA build and where
+#        routes are resolved from. The two are different benchmarks with different route budgets
+#        and different success rules: never pool their scores (benchmark/PROTOCOL.md).
+#      ACCESS (privileged | sensors; default = the config's `access`)
+#      CARLA_ROOT ($HOME/carla)  F2D_CARLA_ROOT ($HOME/f2d_carla)
+#      GPU_RANK (0)  CARLA_PORT (20000)  TM_PORT (CARLA_PORT+20000)
 #      TM_SEED (0)  PROBE_CONFIG (carla_probe/config.yaml)  PROBE_PORT / PROBE_HOST (from config)
 #      CARLA_EXTERNAL=1 to reuse an already-running CARLA server on CARLA_PORT
-#      AGENT_MAX_TICKS (4000 = the stock 200 s route budget; changing it makes scores non-standard)
+#      AGENT_MAX_TICKS (bench2drive: 4000 = the stock 200 s route budget. fail2drive: unset =
+#        stock, which has no tick cap at all. Setting it on either makes scores non-standard.)
 #      SIM_RECORD (1): CARLA recorder log of the whole simulation into SESSION_DIR (replay with
 #        tools/replay_sim.py); 0 turns it off
 #      RECORD_CAMERA_EVERY (config value): log the record.camera_id frame every N ticks to camera_log/
@@ -27,13 +34,28 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROUTE_ARG="${1:?usage: run_session.sh <ROUTE_ID | ROUTE_XML> [SESSION_DIR]}"
 
-if [ -z "${LEADERBOARD_ROOT:-}" ]; then
+export BENCHMARK="${BENCHMARK:-bench2drive}"
+if [ -z "${LEADERBOARD_ROOT:-}" ] || [ "${PROBE_BENCHMARK_ACTIVE:-}" != "$BENCHMARK" ]; then
     # shellcheck disable=SC1091
     source "$REPO_ROOT/scripts/env.sh"
 fi
 
+F2D_SPLIT="$REPO_ROOT/third_party/fail2drive/fail2drive_split"
 if [ -f "$ROUTE_ARG" ]; then
     ROUTES="$(realpath "$ROUTE_ARG")"   # the leaderboard crashes on relative route paths
+elif [ "$BENCHMARK" = fail2drive ]; then
+    # Fail2Drive ships one XML per route, named <Split>_<Scenario>_<id>.xml with <id> a unique
+    # zero-padded 4-digit number that is also the route id inside the XML. Accept either form.
+    if [ -f "$F2D_SPLIT/$ROUTE_ARG.xml" ]; then
+        ROUTES="$F2D_SPLIT/$ROUTE_ARG.xml"
+    elif [[ "$ROUTE_ARG" =~ ^[0-9]+$ ]]; then
+        ROUTES="$(printf '%s\n' "$F2D_SPLIT"/*_$(printf '%04d' "$ROUTE_ARG").xml)"
+        [ -f "$ROUTES" ] || { echo "ERROR: no Fail2Drive route with id $(printf '%04d' "$ROUTE_ARG")" >&2; exit 1; }
+    else
+        echo "ERROR: no Fail2Drive route '$ROUTE_ARG' (expected a name like Base_Animals_0075, a" >&2
+        echo "       route id like 75, or a path to an XML). See $F2D_SPLIT/" >&2
+        exit 1
+    fi
 elif [[ "$ROUTE_ARG" =~ ^[0-9]+$ ]]; then
     ROUTES="$REPO_ROOT/routes/bench2drive220/route_${ROUTE_ARG}.xml"
     [ -f "$ROUTES" ] || { echo "ERROR: no route file $ROUTES (run scripts/setup_bench2drive.sh)" >&2; exit 1; }
@@ -78,13 +100,15 @@ RECORD_ARGS=()
 ACCESS_EFFECTIVE="$(awk '/^access:/{print $2}' "$SESSION_DIR/config.yaml")"
 PROBE_ADDR="${PROBE_HOST:-$(awk '/^host:/{print $2}' "$PROBE_CONFIG")}:${PROBE_PORT:-$(awk '/^port:/{print $2}' "$PROBE_CONFIG")}"
 cat > "$SESSION_DIR/session.json" <<EOF
-{"routes": "$ROUTES", "access": "$ACCESS_EFFECTIVE", "tm_seed": $TM_SEED, "carla_port": $CARLA_PORT, "probe_addr": "$PROBE_ADDR",
- "max_ticks": ${AGENT_MAX_TICKS:-4000}, "sim_record": $SIM_RECORD,
+{"benchmark": "$BENCHMARK", "route": "$ROUTE_STEM",
+ "routes": "$ROUTES", "access": "$ACCESS_EFFECTIVE", "tm_seed": $TM_SEED, "carla_port": $CARLA_PORT, "probe_addr": "$PROBE_ADDR",
+ "max_ticks": ${AGENT_MAX_TICKS:-$([ "$BENCHMARK" = bench2drive ] && echo 4000 || echo null)}, "sim_record": $SIM_RECORD,
  "camera_every_n_ticks": $(awk '/^ *camera_every_n_ticks:/{print $2}' "$SESSION_DIR/config.yaml"), "started": "$(date -Iseconds)",
  "repo_commit": "$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"}
 EOF
 
 echo "=== CARLA probe session ==="
+echo "    bench:    $BENCHMARK"
 echo "    route:    $ROUTES"
 echo "    access:   $ACCESS_EFFECTIVE"
 echo "    session:  $SESSION_DIR"

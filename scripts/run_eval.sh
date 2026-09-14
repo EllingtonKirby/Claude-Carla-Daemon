@@ -2,8 +2,9 @@
 # Run one benchmark eval: a probe session driven by an isolated, headless Claude Code driver.
 # See docs/HANDOFF.md §4 for the rules and §5 for what gets recorded.
 #
-#   bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> [SESSION_DIR]
+#   bash scripts/run_eval.sh <ROUTE> <sensors|privileged> <MODEL> [SESSION_DIR]
 #   bash scripts/run_eval.sh 2091 sensors claude-opus-5
+#   BENCHMARK=fail2drive bash scripts/run_eval.sh Base_Animals_0075 sensors claude-opus-5
 #
 # Blocks until the route is scored (run it in the background). Steps:
 #   1. launch scripts/run_session.sh and wait until the route is loaded and paused;
@@ -21,7 +22,10 @@
 #                         additionally needs a sandbox and a pre-flight isolation check in which a
 #                         cheap model must be DENIED reading the session directory.
 #
-# Env: GPU_RANK (0)  CARLA_PORT (20000)  PROBE_PORT (8790): stride CARLA_PORT by >= 10 per parallel run
+# Env: BENCHMARK (bench2drive | fail2drive): which benchmark to score on. The two are not
+#        comparable -- different routes, CARLA build, route budget and success rule. Fail2Drive is
+#        scored in PAIRS (tools/f2d_score.py); one route on its own is not an F2D result.
+#      GPU_RANK (0)  CARLA_PORT (20000)  PROBE_PORT (8790): stride CARLA_PORT by >= 10 per parallel run
 #      DRIVER (drive_loop)  LOAD_TIMEOUT_S (900)
 #      drive_loop only: PROMPT_VARIANT (baseline|guided)  EFFORT (high)  KEEP_IMAGES (3)
 #      claude_p only:   ISOLATION_CHECK (1)  CHECK_MODEL (haiku)
@@ -41,7 +45,13 @@ if [ "$DRIVER" = claude_p ] || [ "${ISOLATION_CHECK:-1}" = 1 ]; then
     command -v claude >/dev/null || { echo "ERROR: claude (Claude Code CLI) not on PATH" >&2; exit 1; }
 fi
 
-if [ -z "${LEADERBOARD_ROOT:-}" ]; then
+export BENCHMARK="${BENCHMARK:-bench2drive}"
+case "$BENCHMARK" in
+    bench2drive) LEADERBOARD_NAME="Bench2Drive" ;;
+    fail2drive)  LEADERBOARD_NAME="Fail2Drive" ;;
+    *) echo "ERROR: BENCHMARK must be bench2drive or fail2drive" >&2; exit 1 ;;
+esac
+if [ -z "${LEADERBOARD_ROOT:-}" ] || [ "${PROBE_BENCHMARK_ACTIVE:-}" != "$BENCHMARK" ]; then
     # shellcheck disable=SC1091
     source "$REPO_ROOT/scripts/env.sh"
 fi
@@ -68,7 +78,7 @@ if [ "$DRIVER" = drive_loop ]; then
         exit 1; }
 fi
 
-echo "=== eval: route $ROUTE, track $TRACK, model $MODEL, driver $DRIVER"
+echo "=== eval: $BENCHMARK route $ROUTE, track $TRACK, model $MODEL, driver $DRIVER"
 echo "    session: $SESSION_DIR"
 
 # ---- 1. session --------------------------------------------------------------------------------
@@ -102,13 +112,14 @@ if [ "$DRIVER" = claude_p ]; then
               "Read(/$REPO_ROOT/docs/OPERATOR_GUIDE.md)",
               "Read(/$REPO_ROOT/benchmark/PROTOCOL.md)",
               "Read(/$REPO_ROOT/.claude/skills/drive-carla/SKILL.md)"],
-    "deny": ["Read(/$SESSION_DIR/*.*)", "Read(/$REPO_ROOT/routes/**)", "Read(/$REPO_ROOT/third_party/**)"]
+    "deny": ["Read(/$SESSION_DIR/*.*)", "Read(/$REPO_ROOT/routes/**)", "Read(/$REPO_ROOT/third_party/**)",
+             "Read(/$REPO_ROOT/third_party/fail2drive/**)"]
   }
 }
 EOF
     # The canonical driver prompt. Changing it makes results non-comparable: note it next to results.
     cat > "$DRIVER_WS/prompt.txt" <<EOF
-You are the driver in a CARLA Bench2Drive benchmark run on the $TRACK track. A probe session for
+You are the driver in a CARLA $LEADERBOARD_NAME benchmark run on the $TRACK track. A probe session for
 one route is already running and paused, waiting for your commands.
 
 Send commands only as: $PY -m carla_probe.client CMD key=value ...
@@ -166,7 +177,7 @@ fi
 # ---- 4. driver -----------------------------------------------------------------------------------
 if [ "$DRIVER" = claude_p ]; then
     cat > "$SESSION_DIR/driver.json" <<EOF
-{"driver": "$DRIVER", "model": "$MODEL", "claude_code": "$(claude --version)", "track": "$TRACK", "route": "$ROUTE",
+{"driver": "$DRIVER", "model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}
 EOF
@@ -180,14 +191,15 @@ else
     # drive_loop writes prompt.txt + tools.json into the session itself: together they ARE the
     # benchmark definition, and their hash lands in driver.json below (from driver_loop.jsonl).
     cat > "$SESSION_DIR/driver.json" <<EOF
-{"driver": "$DRIVER", "model": "$MODEL", "track": "$TRACK", "route": "$ROUTE",
+{"driver": "$DRIVER", "model": "$MODEL", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "prompt_variant": "$PROMPT_VARIANT", "effort": "$EFFORT", "keep_images": $KEEP_IMAGES,
  "started": "$(date -Iseconds)"}
 EOF
     echo "    driver running (log: $SESSION_DIR/driver_loop.jsonl)"
     set +e
     "$PY" -m carla_probe.drive_loop --addr "$ADDR" --session "$SESSION_DIR" \
-        --model "$MODEL" --prompt "$PROMPT_VARIANT" --effort "$EFFORT" --keep-images "$KEEP_IMAGES" \
+        --model "$MODEL" --benchmark "$BENCHMARK" --prompt "$PROMPT_VARIANT" --effort "$EFFORT" \
+        --keep-images "$KEEP_IMAGES" \
         < /dev/null > "$SESSION_DIR/driver_stdout.log" 2> "$SESSION_DIR/driver_stderr.log"
     driver_rc=$?
     set -e

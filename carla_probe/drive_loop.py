@@ -84,9 +84,14 @@ def _thinking_params(model: str, effort: str, max_tokens: int) -> Dict[str, Any]
 #
 # Note the plan's validity boundary (§5): road rules the scorer enforces are in scope, scorer
 # mechanics are not. GUIDED names the rules; it must never explain how the scoring can be gamed.
+#
+# {leaderboard} is the ONLY benchmark-dependent word in either variant, and it is filled from
+# --benchmark. With the default it renders "Bench2Drive", so every existing Bench2Drive
+# definition_sha256 is unchanged; a Fail2Drive run hashes differently, which is right -- the two
+# are different benchmark definitions, not two runs of one.
 
 BASELINE_PROMPT = """You are driving a car in the CARLA simulator along a fixed route, and are \
-scored by the Bench2Drive leaderboard: route completion multiplied by an infraction penalty.
+scored by the {leaderboard} leaderboard: route completion multiplied by an infraction penalty.
 
 The simulation is FROZEN while you think. Time advances only through your driving tools.
 
@@ -115,6 +120,7 @@ Say what you actually see in `why` -- positions, distances, which lane, what the
 doing. Once an image is cleared, that account is what you still have."""
 
 PROMPTS = {"baseline": BASELINE_PROMPT, "guided": BASELINE_PROMPT + _GUIDANCE}
+LEADERBOARDS = {"bench2drive": "Bench2Drive", "fail2drive": "Fail2Drive"}
 
 # One tool per daemon command the driver needs. Kept deliberately close to the wire protocol
 # (docs/OPERATOR_GUIDE.md) so behaviour stays comparable with the `claude -p` driver.
@@ -210,6 +216,8 @@ def main() -> int:
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--prompt", default="baseline", choices=sorted(PROMPTS),
                     help="which benchmark prompt to run (default %(default)s)")
+    ap.add_argument("--benchmark", default="bench2drive", choices=sorted(LEADERBOARDS),
+                    help="which leaderboard the prompt names (default %(default)s)")
     ap.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
     ap.add_argument("--max-turns", type=int, default=400, help="hard stop (default %(default)s)")
     ap.add_argument("--keep-images", type=int, default=3,
@@ -219,7 +227,7 @@ def main() -> int:
 
     import anthropic  # imported late so --help works without the SDK installed
 
-    system = PROMPTS[args.prompt]
+    system = PROMPTS[args.prompt].format(leaderboard=LEADERBOARDS[args.benchmark])
     # Snapshot the exact definition next to the run, and hash it, so a reworded tool description
     # can never change results without leaving a record (`claude -p` hashes prompt.txt the same way).
     tools_json = json.dumps(TOOLS, indent=2, sort_keys=True)
@@ -237,7 +245,7 @@ def main() -> int:
 
     opening = probe.call("percept")
     record({"event": "start", "t_wall": time.time(), "model": args.model, "effort": args.effort,
-            "prompt": args.prompt, "definition_sha256": definition_sha256,
+            "prompt": args.prompt, "benchmark": args.benchmark, "definition_sha256": definition_sha256,
             "keep_images": args.keep_images, "status": opening.get("status")})
     messages: List[Dict[str, Any]] = [{"role": "user", "content": _result_content(dict(opening))}]
 
