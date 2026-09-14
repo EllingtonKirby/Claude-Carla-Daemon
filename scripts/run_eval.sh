@@ -111,6 +111,11 @@ Drive the route to the end. Stop when an advance returns route_end or the client
 the daemon closed the connection. Then reply with a short account of the drive.
 EOF
 cp "$DRIVER_WS/prompt.txt" "$DRIVER_WS/settings.json" "$SESSION_DIR/"
+# --setting-sources "" is load-bearing for isolation, not just a settings.json switch: it also stops
+# CLAUDE.md / memory being loaded, from the sandbox AND from ~/.claude. Verified -- with the flag a
+# CLAUDE.md in the working directory is ignored; without it, its contents reach the driver. Dropping
+# it would silently add an instruction channel outside the canonical prompt, and one that nothing
+# hashes into driver.json. Leave it empty.
 DRIVER_FLAGS=(--permission-mode dontAsk --tools "Bash,Read" --setting-sources "" --settings "$DRIVER_WS/settings.json"
               --autocompact "$AUTOCOMPACT")
 
