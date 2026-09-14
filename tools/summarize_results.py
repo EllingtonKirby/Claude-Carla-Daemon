@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Summarize probe sessions into a benchmark table.
 
-    python scripts/summarize_results.py sessions/*            # markdown table
-    python scripts/summarize_results.py sessions/* --json     # machine-readable
+    python tools/summarize_results.py sessions/*            # markdown table
+    python tools/summarize_results.py sessions/* --json     # machine-readable
 
 Per session directory it reads:
   result.json     leaderboard scoring: DS (score_composed), RC (score_route), IS (score_penalty),

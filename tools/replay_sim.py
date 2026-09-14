@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Replay a session's CARLA recording: summary, collisions, or rendered frames for a step range.
 
-    python scripts/replay_sim.py SESSION_DIR info
-    python scripts/replay_sim.py SESSION_DIR collisions
-    python scripts/replay_sim.py SESSION_DIR frames --from-step 200 --to-step 320 [--view chase|front|top]
+    python tools/replay_sim.py SESSION_DIR info
+    python tools/replay_sim.py SESSION_DIR collisions
+    python tools/replay_sim.py SESSION_DIR frames --from-step 200 --to-step 320 [--view chase|front|top]
                                  [--every 1] [--size 960x540] [--video] [--out DIR]    # --video needs ffmpeg
 
 The recording (`<route>_rep0.log`, written when run_session.sh runs with SIM_RECORD=1) holds every
@@ -187,6 +187,11 @@ def render_frames(client: carla.Client, sess: Session, args: argparse.Namespace)
     start_frame = max(sess.start_frame + 1, first - warmup)
     print(client.replay_file(str(sess.recording), sess.time_of_frame(start_frame), 0.0, 0, False).strip(), flush=True)
     world = client.get_world()
+    # replay_file() turns synchronous mode OFF (settings come back synchronous_mode=False,
+    # fixed_delta_seconds=None). Without this re-apply the world advances by wall-clock delta
+    # (~0.023 s/tick observed) instead of sess.dt, so counting ticks drifts without bound: the
+    # ego was 45 m from its labelled position by mid-route, which is the replay/overlay desync.
+    world.apply_settings(settings)
     weather, varies = sess.weather()
     if weather is not None:
         world.tick()  # the replayer (re)loads the map on the first tick; set weather after it
@@ -196,10 +201,15 @@ def render_frames(client: carla.Client, sess: Session, args: argparse.Namespace)
             print("note: this route changes weather along the way; the replay uses its start weather")
 
     camera, images, written, missing = None, queue.Queue(), [], 0
+    # With synchronous mode re-applied above, one world.tick() advances exactly sess.dt, i.e. one
+    # recorded frame, so counting ticks is sound. The increment belongs BEFORE the frame is used:
+    # start_frame is the frame already on screen, so the tick lands on start_frame + 1. Incrementing
+    # afterwards labelled every image one frame early, and the decision/why overlay with it.
     rec_frame = start_frame
     try:
         while rec_frame <= last:
             server_frame = world.tick()
+            rec_frame += 1   # the tick just advanced the world to this frame
             if camera is None:
                 hero = [a for a in world.get_actors().filter("vehicle.*") if a.attributes.get("role_name") == "hero"]
                 if hero:
@@ -213,14 +223,12 @@ def render_frames(client: carla.Client, sess: Session, args: argparse.Namespace)
                 img = _image_for(images, server_frame)
                 if img is None:
                     missing += 1
-                    rec_frame += 1
                     continue
                 arr = np.frombuffer(img.raw_data, dtype=np.uint8).reshape(img.height, img.width, 4)[:, :, :3]
                 step = sess.frame_to_step.get(rec_frame)
                 path = out_dir / f"frame_{rec_frame:06d}" f"{'' if step is None else f'_step_{step:05d}'}.jpg"
                 cv2.imwrite(str(path), overlay(np.ascontiguousarray(arr), sess, rec_frame))
                 written.append(path)
-            rec_frame += 1
     finally:
         if camera is not None:
             camera.stop()

@@ -69,13 +69,15 @@ HELP: Dict[str, str] = {
     "get_state": "full state (privileged: world + ego frame scene; sensors: raw ego sensors + pose estimate)",
     "get_score*": "live driving-score estimate with every infraction event",
     "get_camera [cams] [scale]": "write camera JPGs, return paths",
+    "percept [cams] [scale] [k]": "observe + the camera JPGs for this tick in ONE round trip; add "
+                                  "percept=true to any driving command to get the next percept in its reply",
     "render_bev": "top-down PNG (privileged: lanes, actors, lights; sensors: route + plan only)",
     "dump_frame": "state.json + cameras + bev.png into frames/frame_<step>/",
     "apply_plan waypoints ticks [target_speed] [stop_on_collision]":
         "track ego-frame [[fwd,left],...] (>=2 pts, plan_interval_s apart) for ticks",
     "set_control steer throttle brake ticks [stop_on_collision]": "raw control for ticks",
     "hold [ticks]": "brake; with ticks, also advance",
-    "record on [every]": "toggle camera frame logging to camera_log/ (for scripts/make_video.py)",
+    "record on [every]": "toggle camera frame logging to camera_log/ (for tools/make_video.py)",
     "shutdown": "abort the route (scored as an agent failure)",
     "why": "justification string, REQUIRED on every driving command (apply_plan, set_control, hold, tick, "
            "run_until_*, shutdown): what you observed and why this command follows from it",
@@ -164,6 +166,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._record_cam_id = str(cfg["record"]["camera_id"])
         self._record_every = int(cfg["record"]["camera_every_n_ticks"])
         self._cameras = [dict(c) for c in cfg["cameras"]]
+        self._percept_cams = list(cfg["percept"]["cams"])
+        self._percept_scale = float(cfg["percept"]["scale"])
         self._require_why = bool(cfg["require_justification"])
         self.pid = PIDController(cfg["pid"])
         # The stock route budget; the patched leaderboard reads the same variable (docs/DESIGN.md).
@@ -364,6 +368,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             "coll0": len(self._collisions),
             "inf0": Counter(_event_key(ev) for ev in self._infraction_events()),
             "stop_on_collision": bool(cmd.get("stop_on_collision", False)),
+            "percept": dict(cmd) if cmd.get("percept") else None,
             **extra,
         }
 
@@ -397,7 +402,13 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             score = self._live_score(detail=True)
             result["collisions_during"] = self._collisions[a["coll0"]:]
             result["new_infractions"] = _new_events(score["events"] if score else [], a["inf0"])
-        self._server.send({"ok": True, "result": result, "status": self._status()})
+        reply: Dict[str, Any] = {"ok": True, "result": result, "status": self._status()}
+        # Not on route_end: that call comes from `destroy`, mid-teardown, where a privileged
+        # `_observe` would touch hero_actor / the map / level bounding boxes the evaluator may
+        # already have torn down -- and the percept would be useless anyway, the route is over.
+        if a["percept"] is not None and reason != "route_end":
+            reply.update(self._percept(a["percept"]))
+        self._server.send(reply)
         if self._pending_decision is not None:
             self._write_decision_result(self._pending_decision, {"reason": reason, "ticks_advanced": a["ticks"]})
             self._pending_decision = None
@@ -461,6 +472,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         if name == "get_camera":
             out_dir = self._out / "frames" / f"frame_{self.step:05d}"
             return {"ok": True, "files": self._write_cameras(out_dir, cmd.get("cams"), float(cmd.get("scale", 1.0)))}
+        if name == "percept":
+            return {"ok": True, **self._percept(cmd)}
         if name == "render_bev":
             return {"ok": True, "file": self._render_bev()}
         if name == "dump_frame":
@@ -742,6 +755,23 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             cv2.imwrite(str(path), img)
             files.append(str(path.resolve()))
         return files
+
+    def _percept(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """One round trip's worth of perception: the observation plus this tick's camera images.
+
+        Purely a composition of the existing access-correct builders -- `_sensor_observe` vs
+        `_observe`, and cameras, which are Bench2Drive-eligible at both levels -- so it cannot widen
+        what a sensors session sees. Keep it that way: anything added here must be routed through a
+        builder that already branches on `_sensors_only`, never read off `hero_actor` or the world.
+        """
+        cams = cmd.get("cams", self._percept_cams)
+        scale = float(cmd.get("scale", self._percept_scale))
+        k = int(cmd.get("k", self._nearest_k))
+        out_dir = self._out / "frames" / f"frame_{self.step:05d}"
+        return {
+            "observe": self._sensor_observe() if self._sensors_only else self._observe(k),
+            "files": self._write_cameras(out_dir, cams, scale),
+        }
 
     # ------------------------------------------------------------------ sensors-only views
     def _sensor_state(self) -> Dict[str, Any]:

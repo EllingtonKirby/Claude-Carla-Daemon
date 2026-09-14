@@ -62,6 +62,7 @@ reviewed against the scene after the run. Write the reason you actually acted on
 | `get_state` | | everything the access level allows |
 | `get_score`\* | | live DS / RC / IS estimate plus every infraction event |
 | `get_camera` | `cams?` `scale?` | JPG paths (`CAM_FRONT`, `CAM_FRONT_LEFT`, `CAM_FRONT_RIGHT`, `CAM_BACK` by default) |
+| `percept` | `cams?` `scale?` `k?` | `observe` **and** the camera JPGs for this tick in one reply. Also available as `percept=true` on any driving command, which returns the next look in the reply that reports the outcome |
 | `render_bev` | | PNG path (contents per §3) |
 | `dump_frame` | | state.json + cameras + bev.png into `frames/frame_<step>/` |
 | `apply_plan` | `waypoints` `ticks` `target_speed?` `stop_on_collision?`\* | **primary driving primitive**: PID-track ego-frame waypoints for `ticks` |
@@ -70,7 +71,7 @@ reviewed against the scene after the run. Write the reason you actually acted on
 | `tick` | `n` `stop_on_collision?`\* | advance in the current mode |
 | `run_until_frame` | `frame` | advance until `step >= frame` |
 | `run_until_event` | `event` `max_ticks?` | `stopped` \| `plan_done` \| `collision`\* \| `infraction`\* |
-| `record` | `on` `every?` | log camera frames to `camera_log/` (then `scripts/make_video.py`) |
+| `record` | `on` `every?` | log camera frames to `camera_log/` (then `tools/make_video.py`) |
 | `shutdown` | | abort the route (scored as an agent failure) |
 
 ## 5. Frames: read this first
@@ -142,7 +143,9 @@ reviewed against the scene after the run. Write the reason you actually acted on
 ## 9. Operating efficiently
 
 - One `observe` per decision, plus cameras (sensors track) or `render_bev` when the geometry is
-  unclear (privileged).
+  unclear (privileged). `percept` returns both in one command, and `percept=true` on the driving
+  command itself folds the next look into the reply you were already waiting for -- a decision then
+  costs one round trip instead of three.
 - Deliberation is free; the tick budget is not. Don't creep for no reason.
 - On route end the advance returns reason `route_end`; `result.json` holds the official scores.
 
@@ -153,5 +156,5 @@ with wall time), `decisions.jsonl` / `decisions.txt` (your driving commands, jus
 outcomes), `trajectory.jsonl` (per-tick pose and control; the GNSS estimate on the sensors track),
 a CARLA recording of the whole simulation, `frames/`, `camera_log/`, `evaluator.log`, `carla.log`,
 `probe_done.json`.
-`python scripts/make_video.py SESSION_DIR` turns `camera_log/` into an mp4. On the sensors track,
+`python tools/make_video.py SESSION_DIR` turns `camera_log/` into an mp4. On the sensors track,
 see `benchmark/PROTOCOL.md` rule 6 before opening any of these mid-run.
