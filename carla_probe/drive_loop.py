@@ -41,7 +41,9 @@ picture goes; the description the driver wrote of it stays.
 
 Cost accounting for §0.3 of the plan is written to `driver_loop.jsonl` in the session directory:
 per turn, the token usage split by cache reads / writes, the tool called, and the step it left the
-route at.
+route at: one `turn` row per API response carrying that turn's usage, and one `tool` row per call
+carrying the decision. Usage lives on the turn row, not the tool row, because a turn may call more
+than one tool. `tools/cost_report.py` reads it (and the `claude -p` transcript) into the cost model.
 """
 
 from __future__ import annotations
@@ -188,7 +190,9 @@ def _result_content(reply: Dict[str, Any]) -> List[Dict[str, Any]]:
     The images are pulled OUT of the JSON and sent as real image blocks -- the point of §1.2. Under
     `claude -p` the daemon returned paths and the driver spent one Read turn per image.
     """
-    files = reply.pop("files", []) or []
+    # The daemon sends the directory once and bare filenames; join them back up.
+    frames_dir = reply.pop("frames_dir", "") or ""
+    files = [str(Path(frames_dir) / n) for n in (reply.pop("files", []) or [])]
     blocks: List[Dict[str, Any]] = []
     for path in files:
         block = _image_block(path)
@@ -251,6 +255,13 @@ def main() -> int:
             system=system,
             tools=TOOLS,
             messages=messages,
+            # Caching is opt-in: without this the growing transcript is billed at the full input
+            # rate on EVERY turn (~10x a cache read), which would swamp the saving the loop is for.
+            # Top-level auto-caching puts the breakpoint at the last cacheable block, which is what
+            # a transcript that only ever grows at the end needs. Context editing does invalidate
+            # the cache from each clear point, but it is clearing the run of stale images that
+            # would otherwise be re-read for the rest of the route.
+            cache_control={"type": "ephemeral"},
             **_thinking_params(args.model, args.effort, 16000),
             betas=[CONTEXT_EDITING_BETA],
             # §1.1. Every driving tool returns exactly one look, so a tool use IS a look and `keep`
@@ -266,7 +277,11 @@ def main() -> int:
                 "clear_tool_inputs": False,
             }]},
         )
-        usage = response.usage
+        u = response.usage
+        record({"event": "turn", "turn": turns, "stop_reason": response.stop_reason,
+                "usage": {"input": u.input_tokens, "output": u.output_tokens,
+                          "cache_read": getattr(u, "cache_read_input_tokens", None),
+                          "cache_write": getattr(u, "cache_creation_input_tokens", None)}})
         # Append the response CONTENT verbatim -- thinking blocks included and unmodified. Anything
         # else here would be a history edit (see the module docstring).
         messages.append({"role": "assistant", "content": response.content})
@@ -296,10 +311,7 @@ def main() -> int:
                     "why": cmd.get("why"), "ok": reply.get("ok"),
                     "result": reply.get("result"), "step": status.get("step"),
                     "progress_pct": (status.get("route") or {}).get("progress_pct"),
-                    "wall_s": round(time.time() - t0, 2),
-                    "usage": {"input": usage.input_tokens, "output": usage.output_tokens,
-                              "cache_read": getattr(usage, "cache_read_input_tokens", None),
-                              "cache_write": getattr(usage, "cache_creation_input_tokens", None)}})
+                    "wall_s": round(time.time() - t0, 2)})
             if done is None and _route_over(reply):
                 done = str((reply.get("result") or {}).get("reason"))
         messages.append({"role": "user", "content": results})

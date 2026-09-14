@@ -50,7 +50,7 @@ class _FakeProbe:
         self.calls.append((cmd, kwargs))
         driving = len([c for c, _ in self.calls if c != "percept"])
         reason = "route_end" if driving >= self.end_after else "ticks"
-        reply = {"ok": True, "files": [str(self.jpg)],
+        reply = {"ok": True, "frames_dir": str(self.jpg.parent), "files": [self.jpg.name],
                  "observe": {"step": len(self.calls), "nav": {"progress_pct": 10.0}},
                  "status": {"step": len(self.calls), "route": {"progress_pct": 10.0}}}
         if cmd != "percept":
@@ -102,16 +102,35 @@ def test_driving_tool_batches_the_next_look_and_stops_at_route_end(monkeypatch, 
     opening = requests[0]["messages"][0]["content"]
     assert [b["type"] for b in opening] == ["text", "image", "text"]
     assert opening[1]["source"]["media_type"] == "image/jpeg"
-    assert "files" not in json.loads(opening[-1]["text"])  # popped out, not duplicated as text
+    body = json.loads(opening[-1]["text"])
+    assert "files" not in body and "frames_dir" not in body  # popped out, not duplicated as text
 
     assert next(r for r in rows if r["event"] == "end")["reason"] == "route_end"
     assert len(requests) == 2  # stopped on route_end rather than asking the model again
+
+    # Usage is recorded once per API response, never per tool call: a turn calling two tools must
+    # not bill twice, or the cost saving this loop exists to measure is overstated.
+    assert [r["turn"] for r in rows if r["event"] == "turn"] == [1, 2]
+    assert all("usage" not in r for r in rows if r["event"] == "tool")
+
+
+def test_usage_is_recorded_once_for_a_multi_tool_turn(monkeypatch, session):
+    both = _Response([_tool_use("percept", "t1"),
+                      _tool_use("hold", "t2", ticks=5, why="stop")])
+    _, _, rows = _run(monkeypatch, session, [both, _Response([_tool_use("hold", "t3", ticks=5, why="stop")])])
+    # Two responses, three tool calls: usage is billed per response, so two turn rows, not three.
+    turn_rows = [r for r in rows if r["event"] == "turn"]
+    assert len(turn_rows) == 2 and len([r for r in rows if r["event"] == "tool"]) == 3
+    assert [r["usage"]["cache_read"] for r in turn_rows] == [90, 90]
 
 
 def test_context_editing_is_configured_and_history_is_append_only(monkeypatch, session):
     responses = [_Response([_tool_use("hold", "t1", ticks=5, why="stop")]),
                  _Response([_tool_use("hold", "t2", ticks=5, why="stop again")])]
     _, requests, _ = _run(monkeypatch, session, responses, ("--keep-images", "2"))
+
+    # Caching is opt-in; without it the growing transcript is re-billed at full input rate.
+    assert requests[0]["cache_control"] == {"type": "ephemeral"}
 
     edit = requests[0]["context_management"]["edits"][0]
     assert edit["type"] == "clear_tool_uses_20250919"
