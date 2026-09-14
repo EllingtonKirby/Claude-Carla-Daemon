@@ -8,7 +8,9 @@ purpose: discover each scenario from live state.
 - One session = one route. The leaderboard runs CARLA synchronously at **20 Hz**
   (1 tick = 0.05 s).
 - The sim is **frozen whenever no time-advancing command is pending**, so deliberation is free.
-- A route has a hard budget of **4000 ticks (200 s driven)**; `status.ticks_left` counts down.
+- On Bench2Drive a route has a hard budget of **4000 ticks (200 s driven)**; `status.ticks_left`
+  counts down. On Fail2Drive there is no tick cap -- the route ends on its own timeout -- and
+  `ticks_left` is `null`. Drive as if the tighter budget applied either way.
   The leaderboard also fails the route if the ego is **blocked for 60 s**, **deviates from the
   route** by more than 30 m, or trips a scenario timeout.
 - You are the only driver. At launch the ego is in `hold` mode (braking) and stays there until you

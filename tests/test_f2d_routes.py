@@ -63,3 +63,29 @@ def test_smoke_set_covers_every_scenario_class():
 def test_subsets_are_nested():
     full = set(read_set("f2d_full.txt"))
     assert set(read_set("f2d_pair.txt")) <= set(read_set("f2d_smoke.txt")) <= full
+
+
+# --------------------------------------------------------------------------- the tick budget
+def test_run_session_sets_the_stock_tick_budget_per_benchmark():
+    """`status.ticks_left` must not invent Bench2Drive's 4000-tick cap on Fail2Drive, which has
+    no tick cap at all. run_session.sh is where the benchmark is known."""
+    src = (REPO / "scripts" / "run_session.sh").read_text()
+    assert 'case "$BENCHMARK" in bench2drive) PROBE_TICK_BUDGET=4000 ;; *) PROBE_TICK_BUDGET="" ;; esac' in src
+    assert "export PROBE_PORT PROBE_HOST AGENT_MAX_TICKS PROBE_TICK_BUDGET" in src
+
+
+@pytest.mark.parametrize("env,expected", [
+    ({}, None),                                             # neither set: no budget
+    ({"PROBE_TICK_BUDGET": "4000"}, 4000),                  # bench2drive's stock cap
+    ({"PROBE_TICK_BUDGET": ""}, None),                      # fail2drive: no cap
+    ({"AGENT_MAX_TICKS": "500"}, 500),                      # analysis override, no benchmark hint
+    ({"AGENT_MAX_TICKS": "500", "PROBE_TICK_BUDGET": "4000"}, 500),   # override wins
+])
+def test_tick_budget_resolution(env, expected):
+    """The expression carla_probe/agent.py uses, kept honest here because exercising it for real
+    needs the whole simulator stack."""
+    budget = env.get("AGENT_MAX_TICKS") or env.get("PROBE_TICK_BUDGET") or ""
+    assert (int(budget) if budget else None) == expected
+    src = (REPO / "carla_probe" / "agent.py").read_text()
+    assert '_budget = os.environ.get("AGENT_MAX_TICKS") or os.environ.get("PROBE_TICK_BUDGET") or ""' in src
+    assert '"ticks_left": None if self._max_ticks is None else self._max_ticks - max(self.step, 0),' in src

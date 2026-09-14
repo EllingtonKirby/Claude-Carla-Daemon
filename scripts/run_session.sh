@@ -77,7 +77,11 @@ fi
 : "${TM_PORT:=$((CARLA_PORT + 20000))}"
 : "${TM_SEED:=0}"
 : "${PROBE_CONFIG:=$REPO_ROOT/carla_probe/config.yaml}"
-export PROBE_PORT PROBE_HOST AGENT_MAX_TICKS 2>/dev/null || true
+# The stock tick budget of THIS benchmark, for the daemon's `status.ticks_left` display only:
+# Bench2Drive's leaderboard caps a route at 4000 ticks, Fail2Drive's does not cap at all.
+# AGENT_MAX_TICKS, when set, overrides both the leaderboard's cap and this display.
+case "$BENCHMARK" in bench2drive) PROBE_TICK_BUDGET=4000 ;; *) PROBE_TICK_BUDGET="" ;; esac
+export PROBE_PORT PROBE_HOST AGENT_MAX_TICKS PROBE_TICK_BUDGET 2>/dev/null || true
 # Effectively disables the leaderboard's wall-clock watchdogs (agent, sim and client timeouts all
 # ride --timeout): they exist to kill hung agents, and this agent waits for commands on purpose.
 PROBE_TIMEOUT=604800
@@ -102,7 +106,7 @@ PROBE_ADDR="${PROBE_HOST:-$(awk '/^host:/{print $2}' "$PROBE_CONFIG")}:${PROBE_P
 cat > "$SESSION_DIR/session.json" <<EOF
 {"benchmark": "$BENCHMARK", "route": "$ROUTE_STEM",
  "routes": "$ROUTES", "access": "$ACCESS_EFFECTIVE", "tm_seed": $TM_SEED, "carla_port": $CARLA_PORT, "probe_addr": "$PROBE_ADDR",
- "max_ticks": ${AGENT_MAX_TICKS:-$([ "$BENCHMARK" = bench2drive ] && echo 4000 || echo null)}, "sim_record": $SIM_RECORD,
+ "max_ticks": ${AGENT_MAX_TICKS:-${PROBE_TICK_BUDGET:-null}}, "sim_record": $SIM_RECORD,
  "camera_every_n_ticks": $(awk '/^ *camera_every_n_ticks:/{print $2}' "$SESSION_DIR/config.yaml"), "started": "$(date -Iseconds)",
  "repo_commit": "$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"}
 EOF

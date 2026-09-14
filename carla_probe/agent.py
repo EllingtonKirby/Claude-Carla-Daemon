@@ -170,8 +170,13 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._percept_scale = float(cfg["percept"]["scale"])
         self._require_why = bool(cfg["require_justification"])
         self.pid = PIDController(cfg["pid"])
-        # The stock route budget; the patched leaderboard reads the same variable (docs/DESIGN.md).
-        self._max_ticks = int(os.environ.get("AGENT_MAX_TICKS", "4000"))
+        # The route's tick budget, for `status.ticks_left` only. AGENT_MAX_TICKS is the analysis
+        # override the leaderboard itself reads (docs/DESIGN.md); PROBE_TICK_BUDGET is the stock
+        # budget of the benchmark being run, which run_session.sh knows and the agent does not
+        # (Bench2Drive caps hard at 4000, Fail2Drive has NO tick cap). Neither set -> no budget,
+        # and `ticks_left` is null rather than a 4000 that does not exist.
+        _budget = os.environ.get("AGENT_MAX_TICKS") or os.environ.get("PROBE_TICK_BUDGET") or ""
+        self._max_ticks = int(_budget) if _budget else None
 
         self.step = -1
         self._sim_time = 0.0
@@ -693,7 +698,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         status: Dict[str, Any] = {
             "step": self.step,
             "sim_time": _r(self._sim_time, 2),
-            "ticks_left": self._max_ticks - max(self.step, 0),
+            "ticks_left": None if self._max_ticks is None else self._max_ticks - max(self.step, 0),
             "access": self._access,
             "mode": self._mode,
             "plan_done": self._plan_done if self._mode == "plan" else None,
