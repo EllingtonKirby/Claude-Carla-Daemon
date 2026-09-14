@@ -1,0 +1,11 @@
+# Fail2Drive smoke set: one Base/Generalization pair from each of the four scenario classes,
+# the lowest-id Base route in each. 8 routes. Exercises every class and the class tables of
+# tools/f2d_score.py; still far too few routes to report as a Fail2Drive score.
+Base_BadParking_0000                        # Visual-lat
+Generalization_BadParking_1000              # Visual-lat
+Base_ConstructionPedestrian_0010            # Behavior
+Generalization_ConstructionPedestrian_1010  # Behavior
+Base_HardBrake_0035                         # Visual-lon
+Generalization_HardBrake_1035               # Visual-lon
+Base_ImageOnObject_0040                     # Robustness
+Generalization_ImageOnObject_1040           # Robustness

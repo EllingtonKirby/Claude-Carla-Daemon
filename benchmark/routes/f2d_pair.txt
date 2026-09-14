@@ -1,0 +1,5 @@
+# Fail2Drive plumbing check: the lowest-id Base route and its Generalization twin.
+# Two routes is not a Fail2Drive result -- it exercises the install, the CARLA build with the
+# novel assets, and the pair scoring. All Fail2Drive routes are Town13 (a large map).
+Base_BadParking_0000            # Visual-lat
+Generalization_BadParking_1000  # Visual-lat

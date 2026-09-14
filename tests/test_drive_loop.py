@@ -9,6 +9,7 @@ and hashed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import types
@@ -163,11 +164,39 @@ def test_definition_is_snapshotted_and_hashed(monkeypatch, session):
                  _Response([_tool_use("hold", "t2", ticks=5, why="stop")])]
     _, requests, rows = _run(monkeypatch, session, responses, ("--prompt", "guided"))
 
-    assert (out / "prompt.txt").read_text().strip() == drive_loop.PROMPTS["guided"]
+    # --benchmark defaults to bench2drive, so {leaderboard} renders as "Bench2Drive".
+    guided = drive_loop.PROMPTS["guided"].format(leaderboard=drive_loop.LEADERBOARDS["bench2drive"])
+    assert (out / "prompt.txt").read_text().strip() == guided
     assert json.loads((out / "tools.json").read_text()) == json.loads(json.dumps(drive_loop.TOOLS))
-    assert requests[0]["system"] == drive_loop.PROMPTS["guided"]
+    assert requests[0]["system"] == guided
     digest = next(r for r in rows if r["event"] == "end")["definition_sha256"]
     assert len(digest) == 64 and rows[0]["definition_sha256"] == digest
+
+
+# The benchmark definition is the prompt AND the tool schemas; definition_sha256 is what makes two
+# runs comparable. Pinning the digests here means no edit to either can silently move a published
+# result: a deliberate change has to update these constants, and say so.
+DEFINITION_SHA256 = {
+    ("baseline", "bench2drive"): "28fa908af25749677f549c52192e01f1a934047aae17aa009c7a8d0d6904a02e",
+    ("guided", "bench2drive"): "8f6b9e760a71ec699f58017b4c8f8b388c9db02fe694f9e874c8c1e0c6d0d8a4",
+    ("baseline", "fail2drive"): "4459fcc012cbb8a7252a17c0d70d0c0beb69a6b5a22364f9230667363cc5b3d2",
+    ("guided", "fail2drive"): "91c9aac12536d611ef989068ed2a0dd366a0c85672e5cd6e90256789833d2470",
+}
+
+
+@pytest.mark.parametrize("key,expected", sorted(DEFINITION_SHA256.items()))
+def test_definition_hash_is_pinned(key, expected):
+    variant, benchmark = key
+    system = drive_loop.PROMPTS[variant].format(leaderboard=drive_loop.LEADERBOARDS[benchmark])
+    tools_json = json.dumps(drive_loop.TOOLS, indent=2, sort_keys=True)
+    assert hashlib.sha256((system + "\n" + tools_json).encode()).hexdigest() == expected
+
+
+def test_only_the_leaderboard_name_is_benchmark_dependent():
+    """Adding a benchmark must not reword the prompt for the benchmarks already published."""
+    b2d = drive_loop.PROMPTS["baseline"].format(leaderboard="Bench2Drive")
+    f2d = drive_loop.PROMPTS["baseline"].format(leaderboard="Fail2Drive")
+    assert b2d.replace("Bench2Drive", "X") == f2d.replace("Fail2Drive", "X")
 
 
 def test_baseline_prompt_carries_no_driving_guidance():
