@@ -119,7 +119,7 @@ With those variables unset, scoring semantics are stock Bench2Drive.
 - **No reverse.** Controls are steer / throttle / brake only, so an ego stopped nose-first against a
   wall, fence or vehicle cannot back out.
 - **The privileged scene has no static layout.** Fences, poles, walls and curbs are not in
-  `observe`, `get_state` or the BEV, and junction polygons only approximate the paved area. At
+  `percept`, `get_state` or the BEV, and junction polygons only approximate the paved area. At
   junction corners, check the cameras.
 - **BEV lane coverage.** Lanes are expanded through Driving lanes only, so a carriageway beyond a
   median is not drawn (its vehicles still are).

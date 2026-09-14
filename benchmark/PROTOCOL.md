@@ -64,7 +64,7 @@ it adds no information beyond what the sensors show.
    code or config during a run, and no human hints.
 7. **Sensors track: no side channels.** The session directory holds privileged data
    (`evaluator.log`, `carla.log`, `result.json`). While driving, open only the files whose paths the
-   daemon returns (`get_camera`, `render_bev`, `dump_frame`). Reading logs is allowed only to
+   daemon returns (`percept`, `render_bev`, `dump_frame`). Reading logs is allowed only to
    diagnose a launch failure before the first driving command, or after the route has ended.
 8. **No `shutdown`** unless the session is unrecoverable; it scores as an agent failure.
 9. Pausing is free: thinking time between commands does not consume route time.

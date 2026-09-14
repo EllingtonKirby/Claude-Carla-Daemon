@@ -58,11 +58,9 @@ reviewed against the scene after the run. Write the reason you actually acted on
 | command | args | effect |
 |---|---|---|
 | `status` | | step, `ticks_left`, access, mode, speed, last control, route progress (+ speed limit, collision contacts and live score when privileged) |
-| `observe` | `k?` | **the per-decision view**. Privileged: lane, route, relevant lights / stop signs, k nearest actors and parked cars. Sensors: ego status and route. |
 | `get_state` | | everything the access level allows |
 | `get_score`\* | | live DS / RC / IS estimate plus every infraction event |
-| `get_camera` | `cams?` `scale?` | JPG paths (`CAM_FRONT`, `CAM_FRONT_LEFT`, `CAM_FRONT_RIGHT`, `CAM_BACK` by default) |
-| `percept` | `cams?` `scale?` `k?` | `observe` **and** the camera JPGs for this tick in one reply. Also available as `percept=true` on any driving command, which returns the next look in the reply that reports the outcome |
+| `percept` | `cams?` `k?` | **the per-decision view, and the only one.** Privileged: lane, route, relevant lights / stop signs, `k` nearest actors and parked cars. Sensors: ego status and route. Both: `frames_dir` plus a `files` name from **every** camera for this tick — open `<frames_dir>/<name>`. `percept=true` on a driving command returns the next one in the reply that reports the outcome, so a decision costs one round trip |
 | `render_bev` | | PNG path (contents per §3) |
 | `dump_frame` | | state.json + cameras + bev.png into `frames/frame_<step>/` |
 | `apply_plan` | `waypoints` `ticks` `target_speed?` `stop_on_collision?`\* | **primary driving primitive**: PID-track ego-frame waypoints for `ticks` |
@@ -76,7 +74,7 @@ reviewed against the scene after the run. Write the reason you actually acted on
 
 ## 5. Frames: read this first
 
-- **Ego frame: `fwd` = metres ahead, `left` = metres to the LEFT.** `observe`, the `ego` blocks,
+- **Ego frame: `fwd` = metres ahead, `left` = metres to the LEFT.** `percept`, the `ego` blocks,
   `nav.route_points_ego`, `render_bev` (forward is up) and `apply_plan` waypoints all use it. A
   positive `left` is on your left **regardless of world heading**. Reason in this frame, never in
   world compass directions.
@@ -106,13 +104,14 @@ reviewed against the scene after the run. Write the reason you actually acted on
 
 ## 7. Driving on the sensors track
 
-- **The scene exists only in the cameras.** Take `get_camera` every decision: `CAM_FRONT` always,
+- **The scene exists only in the cameras.** Take a `percept` every decision: open `CAM_FRONT` always,
   plus the side cameras at junctions and merges, and `CAM_BACK` before lane changes or reversing
-  your speed plan. `scale=0.5` is usually enough.
-- **Distances from images.** `CAM_FRONT` is 1024×512 px with a 100° horizontal FOV, so its focal
-  length is ≈ 430 px at full resolution. An object of real height H metres that spans h pixels is
-  ≈ 430·H/h metres away. A car is about 1.5 m tall (≈ 645/h m) and 1.8 m wide (≈ 774/w m), and a
-  lane is about 3.5 m wide. Halve the pixel counts at `scale=0.5`.
+  your speed plan.
+- **Distances from images.** The JPGs may be written at a reduced resolution, so work from the image
+  you actually opened rather than from a fixed pixel count. `CAM_FRONT` has a 100° horizontal FOV,
+  which makes its focal length ≈ 0.42 × the image width W in pixels. An object of real height H
+  metres spanning h pixels is then ≈ 0.42·W·H/h metres away. A car is about 1.5 m tall and 1.8 m
+  wide, and a lane about 3.5 m wide.
 - **Closing speed** comes from the change in distance between two frames a known number of ticks
   apart. Compare frames before committing to a gap.
 - **Route points are approximate.** The plan is sparse, so the polyline between route waypoints
@@ -142,10 +141,15 @@ reviewed against the scene after the run. Write the reason you actually acted on
 
 ## 9. Operating efficiently
 
-- One `observe` per decision, plus cameras (sensors track) or `render_bev` when the geometry is
-  unclear (privileged). `percept` returns both in one command, and `percept=true` on the driving
-  command itself folds the next look into the reply you were already waiting for -- a decision then
-  costs one round trip instead of three.
+- One `percept` per decision, plus `render_bev` when the geometry is unclear (privileged).
+  `percept=true` on the driving command folds the next look into the reply you were already waiting
+  for, so a decision costs one round trip rather than two.
+- A percept writes a JPG from every camera but you choose which to open. Opening one costs tokens
+  and it stays in your context; the daemon writing it does not. Look wide when the scene is
+  ambiguous, and take the front camera alone when it is not.
+- **`CAM_BACK` is in every percept.** Whatever is behind you -- a vehicle closing, an emergency
+  vehicle with a lightbar, traffic you would cut in front of -- is only ever visible there, and it
+  is scored. Front-only looking is a blind spot you chose.
 - Deliberation is free; the tick budget is not. Don't creep for no reason.
 - On route end the advance returns reason `route_end`; `result.json` holds the official scores.
 

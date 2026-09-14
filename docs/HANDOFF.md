@@ -111,14 +111,14 @@ The session dir is printed on the launcher's `session:` line. While paused, the 
 | # | command | pass | if it fails, look at |
 |---|---|---|---|
 | 1 | `status` | `ok: true`, `step: 0`, `mode: hold`, `access: privileged`, `speed_limit_mps` a number, `score` **not null** | `score: null`: the patched evaluator did not call `set_scenario` (`grep set_scenario third_party/Bench2Drive/leaderboard/leaderboard/leaderboard_evaluator.py`). Crash before this: `SESSION_DIR/evaluator.log`; sensor validation (camera mounts ≤ 3 m from origin, ≤ 8 cameras), `setup` / `set_global_plan` |
-| 2 | `observe` | `nav.route_points_ego[0]` ≈ `[5, ~0]`; `lane` not null with `lane_width_m` ≈ 3–4; nearby vehicles with plausible `fwd`/`left` | route points far away or behind: `set_global_plan` / `_update_route_progress` |
+| 2 | `percept` | `nav.route_points_ego[0]` ≈ `[5, ~0]`; `lane` not null with `lane_width_m` ≈ 3–4; nearby vehicles with plausible `fwd`/`left` | route points far away or behind: `set_global_plan` / `_update_route_progress` |
 | 3 | `render_bev`, open the PNG | grey lanes under the blue route, ego (red) bottom-centre facing up, vehicles on lanes | lanes offset or rotated: `_local_lanes` / `_yaw_rel_ccw`; no lanes: `CarlaDataProvider.get_map().get_waypoint`; errors about `get_level_bbs`: `_parked_vehicles` |
-| 4 | `get_camera` | 4 JPGs showing the road ahead / left / right / behind | camera ids in `config.yaml` |
+| 4 | open the 4 JPGs `percept` returned | the road ahead / left / right / behind | camera ids in `config.yaml` |
 | 5 | `apply_plan 'waypoints=[[4,0],[8,0],[12,0],[16,0],[20,0]]' target_speed=5 ticks=40` | `result.reason: ticks`, `speed_mps` ≈ 3–5, `mode: plan`, the car moved forward, not sideways | steering sign: `pid.py` (steer + = right); plan anchoring: `geometry.ego_to_world` |
 | 6 | `get_state` | traffic lights within 80 m have a state Red / Green / Yellow; stop signs list `trigger_ego` | `_traffic_lights`, `_stop_signs` |
 | 7 | `set_control steer=0 throttle=0 brake=1 ticks=40`, then `run_until_event event=stopped max_ticks=200` | reason `stopped`, `speed_mps` < 0.1 | |
-| 8 | drive to the end (`observe` + `apply_plan` along `nav.route_points_ego`, 20–40 ticks at a time) | final advance returns `route_end`; `result.json` has a record; the launcher **exits by itself with status 0** and prints a summary table | launcher never exits: the teardown watcher in `run_session.sh`; no `probe_done.json`: `ProbeAgent.destroy` |
-| 9 | after the launcher exits: `python tools/replay_sim.py SESSION_DIR frames --from-step 100 --to-step 100 --view front` | the image matches the driver's view at step 100 (compare with `get_camera` output or `camera_log/`); `score_events.jsonl` rows match `result.json` infractions; `decisions.txt` lists every driving command with its `why` and outcome | no `*_rep0.log`: `SIM_RECORD` / the evaluator's `--record`; no `*_rep0.json`: the patch (re-run `setup_bench2drive.sh` after deleting `third_party/Bench2Drive`); misaligned replay: `replay_sim.Session.time_of_frame` |
+| 8 | drive to the end (`percept` + `apply_plan` along `nav.route_points_ego`, 20–40 ticks at a time) | final advance returns `route_end`; `result.json` has a record; the launcher **exits by itself with status 0** and prints a summary table | launcher never exits: the teardown watcher in `run_session.sh`; no `probe_done.json`: `ProbeAgent.destroy` |
+| 9 | after the launcher exits: `python tools/replay_sim.py SESSION_DIR frames --from-step 100 --to-step 100 --view front` | the image matches the driver's view at step 100 (compare with `percept` output or `camera_log/`); `score_events.jsonl` rows match `result.json` infractions; `decisions.txt` lists every driving command with its `why` and outcome | no `*_rep0.log`: `SIM_RECORD` / the evaluator's `--record`; no `*_rep0.json`: the patch (re-run `setup_bench2drive.sh` after deleting `third_party/Bench2Drive`); misaligned replay: `replay_sim.Session.time_of_frame` |
 
 Also check that `commands.jsonl` and `trajectory.jsonl` in the session dir are populated.
 
@@ -130,7 +130,7 @@ New session: `ACCESS=sensors bash scripts/run_session.sh 25378 > /tmp/session.ou
 |---|---|---|---|
 | 1 | `status` | `access: sensors`; **no** `score`, `speed_limit_mps` or `collision_contacts` keys | |
 | 2 | `get_state` | `pose_estimate.x/y` within ~1 m of the privileged run's start (`trajectory.jsonl` step 0 of both sessions), **not ~1e5**; `yaw_deg` within a few degrees of it | x/y: `geometry.solve_geo_reference` / `gps_to_world`, GPS layout `[lat, lon, alt]`. Yaw off by 90°/180° or mirrored: `geometry.compass_to_yaw_deg`, IMU layout (compass last) |
-| 3 | `observe` | `nav.route_points_ego[0]` within ~1–2 m of `[5, 0]` | yaw conversion (step 2) |
+| 3 | `percept` | `nav.route_points_ego[0]` within ~1–2 m of `[5, 0]` | yaw conversion (step 2) |
 | 4 | `get_score` | refused: `ok: false`, mentions `access=sensors` | `_denied` |
 | 5 | `apply_plan 'waypoints=[[4,0],[8,0],[12,0],[16,0],[20,0]]' target_speed=5 ticks=40` | straight ahead, no weaving (`steer` in `trajectory.jsonl` stays small) | GNSS noise reaching the PID: `gnss_position_gain` |
 | 6 | `render_bev` | route + route points + ego only (no lanes / actors) | |
@@ -232,7 +232,7 @@ may open none of it except the images the daemon returns (the eval sandbox enfor
 | `decisions.jsonl`, `decisions.txt` | daemon | **driving decision justifications**: every accepted driving command with `step`, `t`, `frame`, arguments and the driver's `why`, then its outcome (reason, ticks, step, speed). `.txt` is the same, human-readable |
 | `commands.jsonl` | daemon | every command (including observations and refused ones) with wall time and step, and `advance_done` rows |
 | `trajectory.jsonl` | daemon | per tick: step, sim time, CARLA `frame`, x / y / yaw / speed, mode, steer / throttle / brake. **Sensors track: the GNSS pose estimate**; ground truth is in the recording |
-| `frames/frame_<step>/` | daemon | every image the driver requested (`get_camera`, `render_bev`, `dump_frame`) |
+| `frames/frame_<step>/` | daemon | every image the driver requested (`percept`, `render_bev`, `dump_frame`) |
 | `camera_log/step_<step>.jpg` | daemon | periodic frames from `record.camera_id`, when `RECORD_CAMERA_EVERY=N` is set (or the driver used `record`) |
 | `evaluator.log`, `carla.log`, `launcher.log`, `probe_done.json` | leaderboard, CARLA, launcher, daemon | per-criterion table at route end, crashes, launch progress, final status |
 | `driver_loop.jsonl` | `carla_probe/drive_loop.py` | one row per tool call from the bespoke driver loop: tool, `why`, outcome, step, route progress, and the turn's token usage split into cache reads / writes. Only written by that loop, not by `run_eval.sh` |
