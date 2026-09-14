@@ -4371,7 +4371,12 @@ class ScenarioTimeout(AtomicBehavior):
         Setup actor
         """
         super().__init__(name)
-        self._duration = duration
+        # probe: env-cappable. While a scenario runs, ActorBlockedTest is DISABLED, so an agent
+        # deadlocked inside a scenario zone can only be resolved by this timeout -- but stock
+        # durations can exceed the route budget and never fire. AGENT_SCENARIO_TIMEOUT (seconds)
+        # caps the duration on analysis runs; unset = stock. Benchmark runs leave it unset.
+        _env_cap = os.environ.get("AGENT_SCENARIO_TIMEOUT")
+        self._duration = min(duration, float(_env_cap)) if _env_cap else duration
         self._scenario_name = scenario_name
         self._start_time = 0
         self._scenario_timeout = False

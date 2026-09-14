@@ -11,6 +11,7 @@ It must not be modified and is for reference only!
 """
 
 from __future__ import print_function
+import os
 import signal
 import sys
 import time
@@ -150,6 +151,14 @@ class ScenarioManager(object):
         self._agent_watchdog.start()
 
         self._running = True
+        # probe: analysis-only tick budget. Stock Fail2Drive has NO tick cap -- a route ends on its
+        # RouteTimeoutBehavior, which is derived from route length and speed limits -- so an unset
+        # AGENT_MAX_TICKS is stock F2D. (Bench2Drive's fork caps at a hard 4000 = 200 s @ 20 Hz;
+        # the two benchmarks therefore have different route budgets and their scores must never be
+        # pooled.) Set it only on analysis runs; benchmark runs leave it unset.
+        _max_ticks = os.environ.get("AGENT_MAX_TICKS")
+        self._max_ticks = int(_max_ticks) if _max_ticks else None
+        self.tick_count = 0
 
         # Thread for build_scenarios
         self._scenario_thread = threading.Thread(target=self.build_scenarios_loop, args=(self._debug_mode > 0, ))
@@ -217,6 +226,14 @@ class ScenarioManager(object):
                 print("\n")
                 py_trees.display.print_ascii_tree(self.scenario_tree, show_status=True)
                 sys.stdout.flush()
+
+            self.tick_count += 1
+            if self._max_ticks is not None and self.tick_count > self._max_ticks:
+                # probe: end the route as if the tree had finished, so it is still scored on what
+                # it completed instead of being thrown away as a crashed simulation.
+                print(f"\033[93m> AGENT_MAX_TICKS={self._max_ticks} reached, stopping the route"
+                      f"\033[0m", flush=True)
+                self._running = False
 
             if self.scenario_tree.status != py_trees.common.Status.RUNNING:
                 self._running = False

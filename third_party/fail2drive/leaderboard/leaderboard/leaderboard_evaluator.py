@@ -17,13 +17,21 @@ import argparse
 from argparse import RawTextHelpFormatter
 from distutils.version import LooseVersion
 import importlib
+import json
 import os
 import pkg_resources
 import sys
 import carla
 import signal
 import numpy as np
-import torch
+try:
+    # probe: stock F2D imports torch at module scope purely to seed it in
+    # _load_and_wait_for_world. The probe driver is not a torch model and the simulation env
+    # (scripts/env.sh) does not install torch, so the import must not be fatal. Where torch IS
+    # installed the seeding below runs exactly as upstream.
+    import torch
+except ImportError:
+    torch = None
 
 from srunner.scenariomanager.carla_data_provider import *
 from srunner.scenariomanager.timer import GameTime
@@ -133,7 +141,7 @@ class LeaderboardEvaluator(object):
             return self._agent_watchdog.get_status()
         return False
 
-    def _cleanup(self):
+    def _cleanup(self, results=None):
         """
         Remove and destroy all actors
         """
@@ -144,7 +152,8 @@ class LeaderboardEvaluator(object):
 
         try:
             if self.agent_instance:
-                self.agent_instance.destroy()
+                # probe: the agent writes the final record into its session (docs/HANDOFF.md 5)
+                self.agent_instance.destroy(results)
                 self.agent_instance = None
         except Exception as e:
             print("\n\033[91mFailed to stop the agent:")
@@ -215,7 +224,25 @@ class LeaderboardEvaluator(object):
         self.world = self.client.get_world()
         current_town = self.world.get_map().name.split("/")[-1]
         if town != current_town:
+            # probe: loading a Large Map while synchronous_mode is active crashes libcarla on some
+            # hosts (uncatchable std::runtime_error "s <= road->GetLength()" / SIGSEGV during the
+            # episode change). ALL 200 Fail2Drive routes are Town13, a Large Map, so this is on the
+            # path of every run. Drop to asynchronous mode for the load and restore the
+            # _setup_simulation settings right after. Semantically neutral: the scenario only starts
+            # ticking after this method, and no actors exist while the world is briefly async.
+            prev_world = self.client.get_world()
+            prev_settings = prev_world.get_settings()
+            if prev_settings.synchronous_mode:
+                prev_settings.synchronous_mode = False
+                prev_settings.fixed_delta_seconds = None
+                prev_world.apply_settings(prev_settings)
+                self.traffic_manager.set_synchronous_mode(False)
             self.world = self.client.load_world(town, reset_settings=False)
+            settings = self.world.get_settings()
+            settings.synchronous_mode = True
+            settings.fixed_delta_seconds = 1.0 / self.frame_rate
+            self.world.apply_settings(settings)
+            self.traffic_manager.set_synchronous_mode(True)
 
         # Large Map settings are always reset, for some reason
         settings = self.world.get_settings()
@@ -233,7 +260,8 @@ class LeaderboardEvaluator(object):
         self.traffic_manager.set_random_device_seed(args.traffic_manager_seed)
         np.random.seed(args.traffic_manager_seed)
         random.seed(args.traffic_manager_seed)
-        torch.manual_seed(args.traffic_manager_seed)
+        if torch is not None:
+            torch.manual_seed(args.traffic_manager_seed)
         # Wait for the world to be ready
         self.world.tick()
 
@@ -251,6 +279,8 @@ class LeaderboardEvaluator(object):
         self.statistics_manager.compute_route_statistics(
             route_index, self.manager.scenario_duration_system, self.manager.scenario_duration_game, crash_message
         )
+        # probe: hand the freshly computed record back so _cleanup can give it to the agent
+        return self.statistics_manager._results.checkpoint.records[route_index]
 
     def _load_and_run_scenario(self, args, config):
         """
@@ -282,8 +312,8 @@ class LeaderboardEvaluator(object):
             print(f"\n{traceback.format_exc()}\033[0m")
 
             entry_status, crash_message = FAILURE_MESSAGES["Simulation"]
-            self._register_statistics(config.index, entry_status, crash_message)
-            self._cleanup()
+            result = self._register_statistics(config.index, entry_status, crash_message)
+            self._cleanup(result)
             return True
 
         print("\033[1m> Setting up the agent\033[0m")
@@ -327,8 +357,8 @@ class LeaderboardEvaluator(object):
             print(f"{e}\033[0m\n")
 
             entry_status, crash_message = FAILURE_MESSAGES["Sensors"]
-            self._register_statistics(config.index, entry_status, crash_message)
-            self._cleanup()
+            result = self._register_statistics(config.index, entry_status, crash_message)
+            self._cleanup(result)
             return True
 
         except Exception:
@@ -337,8 +367,8 @@ class LeaderboardEvaluator(object):
             print(f"\n{traceback.format_exc()}\033[0m")
 
             entry_status, crash_message = FAILURE_MESSAGES["Agent_init"]
-            self._register_statistics(config.index, entry_status, crash_message)
-            self._cleanup()
+            result = self._register_statistics(config.index, entry_status, crash_message)
+            self._cleanup(result)
             return False
 
         print("\033[1m> Running the route\033[0m")
@@ -347,8 +377,20 @@ class LeaderboardEvaluator(object):
         try:
             # Load scenario and run it
             if args.record:
-                self.client.start_recorder("{}/{}_rep{}.log".format(args.record, config.name, config.repetition_index))
+                record_name = "{}/{}_rep{}".format(args.record, config.name, config.repetition_index)
+                self.client.start_recorder(record_name + ".log")
+                # probe: the world frame at recorder start maps replay time to agent steps
+                # (tools/replay_sim.py, docs/HANDOFF.md 5)
+                with open(record_name + ".json", "w") as fd:
+                    json.dump({"recorder_file": record_name + ".log",
+                               "start_world_frame": self.world.get_snapshot().frame,
+                               "fixed_delta_seconds": self.world.get_settings().fixed_delta_seconds}, fd)
             self.manager.load_scenario(self.route_scenario, self.agent_instance, config.index, config.repetition_index)
+
+            # probe: the privileged live score mirrors the running scenario's criteria
+            if hasattr(self.agent_instance, 'set_scenario'):
+                self.agent_instance.set_scenario(self.route_scenario)
+
             self.manager.run_scenario()
 
         except AgentError:
@@ -368,12 +410,12 @@ class LeaderboardEvaluator(object):
         try:
             print("\033[1m> Stopping the route\033[0m")
             self.manager.stop_scenario()
-            self._register_statistics(config.index, entry_status, crash_message)
+            result = self._register_statistics(config.index, entry_status, crash_message)
 
             if args.record:
                 self.client.stop_recorder()
 
-            self._cleanup()
+            self._cleanup(result)
 
         except Exception:
             print("\n\033[91mFailed to stop the scenario, the statistics might be empty:")
@@ -417,8 +459,10 @@ class LeaderboardEvaluator(object):
         if self._ros1_server is not None:
             self._ros1_server.shutdown()
 
-        # Go back to asynchronous mode
-        self._reset_world_settings()
+        # probe: leave the world in synchronous mode. scripts/run_session.sh owns the CARLA
+        # server and may hand it to another route (CARLA_EXTERNAL=1); resetting here would leave a
+        # reused server ticking freely.
+        # self._reset_world_settings()
 
         if not crashed:
             # Save global statistics
@@ -470,6 +514,11 @@ def main():
                         help="Path to checkpoint used for saving statistics and resuming")
     parser.add_argument("--debug-checkpoint", type=str, default='./live_results.txt',
                         help="Path to checkpoint used for saving live results")
+    # probe: accepted and unused. Bench2Drive's evaluator spawns its own CARLA and needs this to
+    # pick a GPU; F2D's connects to a server the launcher already started, so the launcher sets
+    # the adapter. Accepting the flag keeps scripts/run_session.sh identical for both benchmarks.
+    parser.add_argument("--gpu-rank", type=int, default=0,
+                        help="Ignored (the launcher owns the CARLA server); accepted for parity")
 
     arguments = parser.parse_args()
 
