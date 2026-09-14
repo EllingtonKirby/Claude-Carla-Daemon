@@ -281,6 +281,11 @@ are in command order.
   frame `replay_sim.py` labels step S really is the world at step S, by replaying and scoring the
   ego's position against `recorder_truth.json` over a range of lags. Prints the best lag and the
   mean error; aligned means best lag 0 at ~0.00 m. Run it after touching the replay path.
+- `python tools/cost_report.py SESSION_DIR...`: turns, decisions, turns-per-decision, average
+  context, tokens by class, cost and the §0.3 cost model constant `k = cost / turns**2`, for either
+  driver (`driver_loop.jsonl` turn rows, or `claude -p`'s final `result` row — assistant messages
+  repeat their usage as a turn streams, so summing those over-counts 3-5x). It warns if its price
+  table drifts more than 1% from what a run itself reported.
 - `python tools/make_video.py SESSION_DIR`: mp4 from `camera_log/`.
 - Videos (`--video`, `make_video.py`) are H.264 (`yuv420p`) encoded by ffmpeg, so they play in browsers and
   common players. Replays run at real time (10 fps with `--every 2`).
