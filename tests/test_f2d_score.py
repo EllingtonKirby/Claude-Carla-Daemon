@@ -189,3 +189,42 @@ def test_unrelated_scenarios_do_not_appear():
     s = f2d.score(_rows((75, "Base", "Animals", 50.0, True)))
     assert set(s["by_scenario"]) == {"Animals"}
     assert s["by_class"]["Behavior"]["Base"]["n"] == 0
+
+
+def test_unscored_record_is_a_failure_not_a_perfect_run(tmp_path):
+    """The evaluator starts a record at status 'Started' with zeroed scores and every infraction
+    list EMPTY. Read at face value that is a successful DS 0 route, which would inflate the success
+    rate; compute_route_statistics is what replaces 'Started' with a real status."""
+    started = _record(75, 0.0, rc=0.0, status="Started")
+    row = f2d.read_session(_session(tmp_path, "s", route="Base_Animals_0075", record=started),
+                           f2d.route_map())
+    assert row["usable"] is True          # PROTOCOL rule 3: it counts, as a failure
+    assert row["DS"] == 0.0 and row["success"] is False
+    assert "never scored" in row["note"]
+
+
+def test_empty_records_list_is_the_pre_run_stub(tmp_path):
+    """result.json is written before the route runs, with records: []."""
+    d = tmp_path / "s"
+    d.mkdir()
+    (d / "session.json").write_text(json.dumps({"benchmark": "fail2drive", "access": "sensors",
+                                                "route": "Base_Animals_0075"}))
+    (d / "result.json").write_text(json.dumps({"_checkpoint": {"records": []},
+                                               "entry_status": "Started"}))
+    row = f2d.read_session(d, f2d.route_map())
+    assert row["usable"] is True and row["DS"] == 0.0 and row["success"] is False
+
+
+@pytest.mark.parametrize("status,usable", [
+    ("Perfect", True), ("Completed", True), ("Failed - Agent crashed", True),
+    ("Failed - Simulation crashed", True),
+    ("Started", True),                                    # counted, as a failure
+    ("Failed - Agent couldn't be set up", False),         # excluded, as upstream does
+])
+def test_status_decides_scorable_vs_excluded(tmp_path, status, usable):
+    row = f2d.read_session(
+        _session(tmp_path, status.replace(" ", "_").replace("'", ""), route="Base_Animals_0075",
+                 record=_record(75, 70.0, status=status)), f2d.route_map())
+    assert row["usable"] is usable
+    if status == "Started":
+        assert row["DS"] == 0.0 and row["success"] is False   # never the record's own 70.0

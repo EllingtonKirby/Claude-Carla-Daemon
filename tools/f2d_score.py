@@ -28,12 +28,13 @@ Two deliberate divergences from upstream, both reporting-only:
 
   * A partial run reports `n/a`, not a drop. Upstream's pct_change(0.0, 99.9) yields a
     credible-looking -100.0% when the truth is that the Generalization side has not run yet.
-  * A session with NO result.json counts as DS 0 / not-successful rather than being dropped,
-    because benchmark/PROTOCOL.md rule 3 reports a crashed or aborted session as a failure. A
-    session WITH a record that is unscorable (`Failed - Agent couldn't be set up`, or a missing or
-    non-numeric score) is excluded from every denominator and listed separately, as upstream does:
-    CARLA pre-populates every infraction list as empty for a route the agent never ran, so counting
-    such a record would score it as a *perfect* drive.
+  * An UNFINISHED session counts as DS 0 / not-successful rather than being dropped, because
+    benchmark/PROTOCOL.md rule 3 reports a crashed or aborted session as a failure. Unfinished
+    means no result.json, no record in it (the evaluator writes the file before the route runs),
+    or a record still at status 'Started' -- which is how a record begins, with zeroed scores and
+    every infraction list EMPTY, so read at face value it is a *successful* DS 0 route.
+  * A session WITH an unscorable record (`Failed - Agent couldn't be set up`, or a missing or
+    non-numeric score) is excluded from every denominator and listed separately, as upstream does.
 
 Stdlib only.
 """
@@ -58,6 +59,13 @@ PAIR_OFFSET = 1000
 
 IGNORED_INFRACTIONS_FOR_SUCCESS = {"min_speed_infractions", "outside_route_lanes"}
 UNSCORABLE_STATUSES = {"Failed - Agent couldn't be set up"}
+# `RouteRecord.__init__` starts a record at status 'Started' with zeroed scores and EVERY infraction
+# list empty, and `compute_route_statistics` is what replaces it with Perfect / Completed /
+# 'Failed - ...'. So a record still reading 'Started' was never scored, and its zeros and empty
+# lists are defaults, not measurements -- taken at face value it is a *successful* DS 0 route, which
+# would inflate the success rate and the harmonic mean built on it. The leaderboard itself uses the
+# same test (`statistics_manager.py`: `if record.status == 'Started'`).
+UNFINISHED_STATUS = "Started"
 
 # Upstream's taxonomy and paper ordering, copied from third_party/fail2drive/tools/f2d_result_parser.py.
 SCENARIO_CLASSES = {
@@ -145,12 +153,19 @@ def read_session(session: Path, routes: Dict[int, Tuple[str, str]]) -> Dict[str,
     row["split"], row["scenario"] = routes[row["route_id"]]
 
     if record is None:
+        # The evaluator writes result.json with `records: []` BEFORE the route runs, so a missing
+        # record and a missing file are the same thing: the route did not finish.
         # PROTOCOL rule 3: a crashed or aborted session is a failure, not a missing measurement.
         row.update(status="no result", DS=0.0, RC=0.0, success=False, usable=True,
-                   note="no result.json: scored as a failure (PROTOCOL rule 3)")
+                   note="no scored record: counted as a failure (PROTOCOL rule 3)")
         return row
 
     row["status"] = record.get("status")
+    if row["status"] == UNFINISHED_STATUS:
+        row.update(DS=0.0, RC=0.0, success=False, usable=True,
+                   note="route never scored (status 'Started'): counted as a failure "
+                        "(PROTOCOL rule 3)")
+        return row
     scores = record.get("scores") or {}
     ds, rc = scores.get("score_composed"), scores.get("score_route")
     if row["status"] in UNSCORABLE_STATUSES or not isinstance(ds, (int, float)) \
