@@ -132,9 +132,14 @@ reviewed against the scene after the run. Write the reason you actually acted on
   only when the whole manoeuvre fits, and do not stop halfway across a lane.
 - **Stop signs**: come to a full stop (speed ≈ 0) at the line before proceeding.
 - **Red lights**: stop before the stop line.
-- **Emergency vehicles**: a vehicle with flashing lights coming up behind you has priority. Slow,
-  keep right and let it past; do not hold it up. It approaches from behind, so it is only ever
-  visible in `CAM_BACK` -- nothing in the route, the front cameras or the ego sensors will warn you.
+- **Emergency vehicles**: a vehicle with flashing lights behind you has priority, and yielding is
+  not finished until it is actually **past you**. It wants the lane you are in, so **get out of that
+  lane**: change lane if there is one, or pull clear onto the shoulder. Slow enough to make the move
+  safely and make it promptly -- decisiveness is the point. **Do not stop in its lane.** A following
+  emergency vehicle stops behind you, the gap freezes, and it can never get by; standing still in
+  front of one is the one action that guarantees it never passes, however far right you sit. It
+  approaches from behind, so it is only ever visible in `CAM_BACK`; nothing in the route, the front
+  cameras or the ego sensors will warn you.
 - **Privileged `collision_contacts` counts contacts, not scored collisions.** The leaderboard counts
   sustained contact as one event; scored infractions are in `status.score`.
 - **Blocked timer**: standing still for 60 s outside a scenario fails the route. Waiting at a light
