@@ -152,12 +152,15 @@ reviewed against the scene after the run. Write the reason you actually acted on
 - One `percept` per decision, plus `render_bev` when the geometry is unclear (privileged).
   `percept=true` on the driving command folds the next look into the reply you were already waiting
   for, so a decision costs one round trip rather than two.
-- A percept writes a JPG from every camera but you choose which to open. Opening one costs tokens
-  and it stays in your context; the daemon writing it does not. Look wide when the scene is
-  ambiguous, and take the front camera alone when it is not.
-- **`CAM_BACK` is in every percept.** Whatever is behind you -- a vehicle closing, an emergency
-  vehicle, traffic you would cut in front of -- is only ever visible there. Front-only looking is a
-  blind spot you chose.
+- **Use all the cameras.** A percept writes a JPG from every one, and the side and rear views show
+  things the front simply cannot. Opening an image costs tokens and it stays in your context, but
+  driving on a partial view costs more than the tokens save.
+- **Check `CAM_BACK` at least once a second**, which means on essentially every decision. A vehicle
+  closing on you, an emergency vehicle, traffic you are about to pull in front of: none of it
+  appears in `CAM_FRONT`, in the route, or in the ego sensors. Something following you gives you no
+  cue at all to look, so the rear check cannot be something you do when the forward view looks
+  ambiguous -- by the time the forward view tells you to look behind, whatever was there has
+  already decided the outcome.
 - Deliberation is free; the tick budget is not. Don't creep for no reason.
 - On route end the advance returns reason `route_end`; `result.json` holds the official scores.
 
