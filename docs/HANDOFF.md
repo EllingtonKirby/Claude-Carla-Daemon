@@ -53,6 +53,11 @@ may be old; the scripts don't rely on it beyond stdlib basics.
 #    BunnyCDN pull zone answering "Domain suspended or not configured", and the AWS carla-releases
 #    bucket is private now), so setup_carla.sh pulls from Backblaze, where CARLA moved its
 #    releases; set CARLA_DOWNLOAD_BASE if that moves too.
+#    On a filtered corporate network this download may be impossible rather than slow: a web filter
+#    that classifies Backblaze as "File Sharing and Storage" returns an HTML block page over an
+#    intercepted TLS connection, so wget fails to verify the certificate. Do NOT reach for
+#    --no-check-certificate: it saves the block page as the tarball. Copy an existing install or
+#    the tarball in from elsewhere instead.
 export CARLA_ROOT=$HOME/carla          # env.sh defaults to $HOME/carla; export it in every shell otherwise
 bash scripts/setup_carla.sh
 
