@@ -132,24 +132,35 @@ reviewed against the scene after the run. Write the reason you actually acted on
   only when the whole manoeuvre fits, and do not stop halfway across a lane.
 - **Stop signs**: come to a full stop (speed ≈ 0) at the line before proceeding.
 - **Red lights**: stop before the stop line.
+- **Emergency vehicles**: a vehicle with flashing lights behind you has priority, and yielding is
+  not finished until it is actually **past you**. It wants the lane you are in, so **get out of that
+  lane**: change lane if there is one, or pull clear onto the shoulder. Slow enough to make the move
+  safely and make it promptly -- decisiveness is the point. **Do not stop in its lane.** A following
+  emergency vehicle stops behind you, the gap freezes, and it can never get by; standing still in
+  front of one is the one action that guarantees it never passes, however far right you sit. It
+  approaches from behind, so it is only ever visible in `CAM_BACK`; nothing in the route, the front
+  cameras or the ego sensors will warn you.
 - **Privileged `collision_contacts` counts contacts, not scored collisions.** The leaderboard counts
   sustained contact as one event; scored infractions are in `status.score`.
 - **Blocked timer**: standing still for 60 s outside a scenario fails the route. Waiting at a light
   is fine if you move off when it turns green.
-- **Min-speed infractions** are percentage penalties for driving much slower than surrounding
-  traffic. Keep up with traffic on open road.
+- **Keep up with the flow of traffic.** Driving far below the speed of the traffic around you is an
+  infraction, not a safe default.
 
 ## 9. Operating efficiently
 
 - One `percept` per decision, plus `render_bev` when the geometry is unclear (privileged).
   `percept=true` on the driving command folds the next look into the reply you were already waiting
   for, so a decision costs one round trip rather than two.
-- A percept writes a JPG from every camera but you choose which to open. Opening one costs tokens
-  and it stays in your context; the daemon writing it does not. Look wide when the scene is
-  ambiguous, and take the front camera alone when it is not.
-- **`CAM_BACK` is in every percept.** Whatever is behind you -- a vehicle closing, an emergency
-  vehicle with a lightbar, traffic you would cut in front of -- is only ever visible there, and it
-  is scored. Front-only looking is a blind spot you chose.
+- **Use all the cameras.** A percept writes a JPG from every one, and the side and rear views show
+  things the front simply cannot. Opening an image costs tokens and it stays in your context, but
+  driving on a partial view costs more than the tokens save.
+- **Check `CAM_BACK` at least once a second**, which means on essentially every decision. A vehicle
+  closing on you, an emergency vehicle, traffic you are about to pull in front of: none of it
+  appears in `CAM_FRONT`, in the route, or in the ego sensors. Something following you gives you no
+  cue at all to look, so the rear check cannot be something you do when the forward view looks
+  ambiguous -- by the time the forward view tells you to look behind, whatever was there has
+  already decided the outcome.
 - Deliberation is free; the tick budget is not. Don't creep for no reason.
 - On route end the advance returns reason `route_end`; `result.json` holds the official scores.
 
