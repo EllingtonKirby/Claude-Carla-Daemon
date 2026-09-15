@@ -36,3 +36,72 @@ def test_target_speed_overrides_spacing_and_brakes_when_fast():
 def test_zero_target_holds():
     _s, throttle, brake, _m = _ctrl().control([[1, 0], [2, 0]], 0.0, 0.0, 0.5)
     assert brake == 1.0 and throttle == 0.0
+
+
+# --------------------------------------------------------------------------- aim point / lookahead
+def _ctrl_with(**over):
+    cfg = dict(CFG["pid"])
+    cfg.update(over)
+    return PIDController(cfg)
+
+
+def _straight(spacing, length=30.0):
+    return [[i * spacing, 0.0] for i in range(int(length / spacing) + 1)]
+
+
+@pytest.mark.parametrize("spacing", [1.0, 2.0, 3.0, 5.0, 6.0, 7.5, 10.0, 15.0])
+def test_interpolating_modes_ignore_waypoint_spacing(spacing):
+    """The whole point of `adaptive`: the lookahead is an arc-length, so how densely the driver
+    happened to space its waypoints cannot change where the controller aims."""
+    c = _ctrl_with(steer_mode="adaptive")
+    _s, _t, _b, meta = c.control(_straight(spacing), 5.0, 5.0, 0.5)
+    assert meta["aim_fwd"] == pytest.approx(meta["lookahead"], abs=1e-6)
+
+
+def test_fixed_mode_lookahead_is_the_spacing_not_aim_dist():
+    """`fixed` snaps to a waypoint, so the driver's spacing sets the real lookahead. Pinned because
+    the tuned gains assume this behaviour, and so a change to it cannot pass unnoticed."""
+    c = _ctrl_with(steer_mode="fixed", aim_dist=7.0)
+    ahead = lambda sp: c.control([[(i + 1) * sp, 0.0] for i in range(int(30 / sp))], 5.0, 5.0, 0.5)[3]["aim_fwd"]
+    assert ahead(4.0) == pytest.approx(4.0)     # nominal 7 m, actually 4
+    assert ahead(15.0) == pytest.approx(15.0)   # nominal 7 m, actually 15
+
+
+def test_fixed_mode_can_aim_at_the_ego_itself():
+    """_compute_control passes the plan from the waypoint nearest the ego, so on reaching one that
+    point sits at ~0 m. At spacings where its midpoint is the nearest to aim_dist, `fixed` steers
+    on a zero-length vector -- the degenerate case the interpolating modes remove."""
+    c = _ctrl_with(steer_mode="fixed", aim_dist=7.0)
+    assert c.control(_straight(7.5), 5.0, 5.0, 0.5)[3]["aim_fwd"] == pytest.approx(0.0)
+    assert _ctrl_with(steer_mode="adaptive").control(_straight(7.5), 5.0, 5.0, 0.5)[3]["aim_fwd"] > 1.0
+
+
+def test_adaptive_lookahead_grows_with_speed_and_is_clipped():
+    c = _ctrl_with(steer_mode="adaptive")
+    slow = c.control(_straight(2.0), 0.0, 5.0, 0.5)[3]["lookahead"]
+    fast = c.control(_straight(2.0), 20.0, 5.0, 0.5)[3]["lookahead"]
+    assert slow < fast
+    assert slow >= CFG["pid"]["lookahead_min"] and fast <= CFG["pid"]["lookahead_max"]
+
+
+def test_aim_falls_back_to_the_last_waypoint_when_the_plan_is_short():
+    c = _ctrl_with(steer_mode="adaptive")
+    meta = c.control([[1.0, 0.0], [2.0, 0.0]], 20.0, 5.0, 0.5)[3]
+    assert meta["aim_fwd"] == pytest.approx(2.0)
+
+
+def test_lead_longitudinal_is_memoryless_and_stops_hard():
+    c = _ctrl_with(long_mode="lead")
+    _s, throttle, brake, _m = c.control(_straight(3.0), 0.0, 6.0, 0.5)
+    assert throttle == pytest.approx(1.0) and brake == 0.0   # crisp launch, no integral to build
+    assert c.control(_straight(3.0), 5.0, 0.0, 0.5)[2] == 1.0  # ~zero target is a hard stop
+
+
+def test_brake_zero_steer_drains_the_turn_integral():
+    """Braking on a bending plan must not accumulate steer, or the first ticks after a red light
+    launch with a pre-loaded wheel."""
+    plan = [[3, -1.0], [6, -2.0], [9, -3.5], [12, -5.0]]
+    c = _ctrl_with(brake_zero_steer=True)
+    for _ in range(10):
+        steer, _t, brake, _m = c.control(plan, 5.0, 0.0, 0.5)   # target 0 -> braking
+    assert brake == 1.0 and steer == pytest.approx(0.0, abs=1e-9)
