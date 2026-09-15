@@ -13,6 +13,11 @@ if [ -z "$carla_root" ]; then
     exit 1
 fi
 
+# CARLA's own download hosts have moved (tiny.carla.org's shortlinks redirect to a BunnyCDN pull
+# zone that now answers "Domain suspended or not configured" for every object). Backblaze is where
+# the releases live now; override this if they move again.
+CARLA_DOWNLOAD_BASE="${CARLA_DOWNLOAD_BASE:-https://carla-releases.s3.us-east-005.backblazeb2.com/Linux}"
+
 mkdir -p "$carla_root"
 cd "$carla_root" || exit 1
 
@@ -21,7 +26,7 @@ if [ -d "${carla_root}/CarlaUE4" ]; then
     echo "CARLA already installed in ${carla_root}. Skipping download."
 else
     echo "Downloading CARLA 0.9.15 to ${carla_root}"
-    wget --content-disposition https://tiny.carla.org/carla-0-9-15-linux || exit 1
+    wget "$CARLA_DOWNLOAD_BASE/CARLA_0.9.15.tar.gz" || exit 1
     echo "Unpacking CARLA (this takes a while)"
     tar -xf CARLA_0.9.15.tar.gz && rm -f CARLA_0.9.15.tar.gz
     if [ ! -d "${carla_root}/CarlaUE4" ]; then
@@ -38,7 +43,7 @@ else
     mkdir -p "${carla_root}/Import"
     if [ ! -f "${carla_root}/Import/AdditionalMaps_0.9.15.tar.gz" ]; then
         echo "Downloading additional maps"
-        ( cd "${carla_root}/Import" && wget --content-disposition https://tiny.carla.org/additional-maps-0-9-15-linux ) || exit 1
+        ( cd "${carla_root}/Import" && wget "$CARLA_DOWNLOAD_BASE/AdditionalMaps_0.9.15.tar.gz" ) || exit 1
     fi
     echo "Importing assets"
     if [ -x "${carla_root}/ImportAssets.sh" ]; then

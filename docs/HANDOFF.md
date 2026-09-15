@@ -47,10 +47,12 @@ may be old; the scripts don't rely on it beyond stdlib basics.
 ```bash
 # 1. CARLA 0.9.15 + the Town11-15 maps. If a 0.9.15 install already exists, point CARLA_ROOT at it
 #    (the script then only checks it). Town12/13 are needed by most benchmark routes.
-#    LOOK FOR AN EXISTING INSTALL FIRST (e.g. /home/carla, $HOME/carla): as of 2026-09 the upstream
-#    download in setup_carla.sh FAILS -- tiny.carla.org redirects to a BunnyCDN host that answers
-#    "Domain suspended or not configured" (403), and the carla-releases S3 bucket 403s too. Check
-#    for CarlaUE4.sh and CarlaUE4/Content/Carla/Maps/Town12/ before assuming you must download.
+#    LOOK FOR AN EXISTING INSTALL FIRST (e.g. /home/carla, $HOME/carla): it is a ~30 GB download.
+#    Check for CarlaUE4.sh and CarlaUE4/Content/Carla/Maps/Town12/ before assuming you must
+#    download. CARLA's tiny.carla.org shortlinks have 403'd since 2026-09 (they redirect to a
+#    BunnyCDN pull zone answering "Domain suspended or not configured", and the AWS carla-releases
+#    bucket is private now), so setup_carla.sh pulls from Backblaze, where CARLA moved its
+#    releases; set CARLA_DOWNLOAD_BASE if that moves too.
 export CARLA_ROOT=$HOME/carla          # env.sh defaults to $HOME/carla; export it in every shell otherwise
 bash scripts/setup_carla.sh
 
