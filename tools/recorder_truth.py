@@ -6,10 +6,15 @@
 Writes ``SESSION_DIR/recorder_truth.json``:
 
     {"dt": 0.05, "hero_id": 109, "frames": {"<frame>": {"t": 1.85,
-                                             "actors": {"<id>": [x, y, yaw]}}},
+                                             "actors": {"<id>": [x, y, yaw, z]}}},
      "actors": {"<id>": {"type": "vehicle.ford.ambulance", "role": "scenario"}}}
 
 Positions are metres in the CARLA world frame (the recorder reports centimetres) and yaw is degrees.
+Two traps the recorder text sets, both of which silently produce confident nonsense:
+``Rotation`` is printed ``(roll, pitch, yaw)``, so yaw is the THIRD field -- reading the second
+gives the pitch and every bearing comes out 180 deg wrong on a road running toward -x. And an actor
+that is not yet in play is parked hundreds of metres BELOW the map with believable x/y, so check
+``z`` before believing a pose.
 
 Why this exists: the recording is the only ground truth we have for a sensors-track run --
 ``trajectory.jsonl`` stores the driver's own GNSS *estimate*. Anything that needs to know where
@@ -37,8 +42,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from replay_sim import Session, connect  # noqa: E402
 
 _FRAME = re.compile(r"^Frame (\d+) at ([\d.]+) seconds")
-_POS = re.compile(r"^\s+Id: (\d+) Location: \(([-\d.e+]+), ([-\d.e+]+), [-\d.e+]+\) "
-                  r"Rotation: \([-\d.e+]+, ([-\d.e+]+), [-\d.e+]+\)")
+# The recorder prints rotation as (roll, pitch, yaw) -- yaw is the THIRD component, not the second.
+# Taking the second gives the pitch, which is ~0 on flat ground, so every bearing computed from it
+# was 180 deg out whenever the actor faced roughly -x. Verified against actual motion: an actor's
+# recorded yaw must match its direction of travel (see `_check_yaw`).
+_POS = re.compile(r"^\s+Id: (\d+) Location: \(([-\d.e+]+), ([-\d.e+]+), ([-\d.e+]+)\) "
+                  r"Rotation: \([-\d.e+]+, [-\d.e+]+, ([-\d.e+]+)\)")
 _CREATE = re.compile(r"^\s+Create (\d+): ([\w.]+) \(\d+\) at ")
 _ATTR = re.compile(r"^\s+(\w+) = (.+)$")
 
@@ -58,9 +67,13 @@ def parse_dump(text: str) -> dict:
             continue
         m = _POS.match(line)
         if m and cur is not None:
+            # [x, y, yaw, z]. z matters: CARLA parks not-yet-active scenario actors hundreds of
+            # metres UNDERGROUND while leaving plausible x/y, so an actor can look present and
+            # nearby when it is not in the scene at all. Filter on z before trusting a pose.
             frames[cur]["actors"][int(m.group(1))] = [round(float(m.group(2)) / 100.0, 3),
                                                       round(float(m.group(3)) / 100.0, 3),
-                                                      round(float(m.group(4)), 2)]
+                                                      round(float(m.group(5)), 2),
+                                                      round(float(m.group(4)) / 100.0, 2)]
             continue
         m = _CREATE.match(line)
         if m:
@@ -130,7 +143,7 @@ def main() -> int:
     for r in traj:
         f, h = str(r.get("frame", 0) - off), str(data["hero_id"])
         if f in frames and h in frames[f]["actors"]:
-            gx, gy, _ = frames[f]["actors"][h]
+            gx, gy = frames[f]["actors"][h][:2]
             errs.append(((gx - r["x"]) ** 2 + (gy - r["y"]) ** 2) ** 0.5)
     if errs:
         errs.sort()
