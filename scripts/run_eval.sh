@@ -113,7 +113,7 @@ if [ "$DRIVER" = claude_p ]; then
               "Read(/$REPO_ROOT/benchmark/PROTOCOL.md)",
               "Read(/$REPO_ROOT/.claude/skills/drive-carla/SKILL.md)"],
     "deny": ["Read(/$SESSION_DIR/*.*)", "Read(/$REPO_ROOT/routes/**)", "Read(/$REPO_ROOT/third_party/**)",
-             "Read(/$REPO_ROOT/third_party/fail2drive/**)"]
+             "Read(/$REPO_ROOT/benchmark/FAIL2DRIVE.md)"]
   }
 }
 EOF

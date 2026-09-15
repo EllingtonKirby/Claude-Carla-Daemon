@@ -21,7 +21,7 @@ It measures how well an LLM drives a car in closed loop, scored by an unmodified
   (driving score) = **RC** (route completion, %) × **IS** (infraction penalty, a product of
   per-infraction multipliers).
 - **Two benchmarks**, selected with `BENCHMARK=` and never pooled
-  (`benchmark/PROTOCOL.md` has the full comparison):
+  (`benchmark/FAIL2DRIVE.md` has the full comparison):
   - `bench2drive` (default): [Bench2Drive](https://github.com/Thinklab-SJTU/Bench2Drive) 0.0.4,
     220 routes over 7 towns, on a stock CARLA. Headline number: mean DS.
   - `fail2drive`: [Fail2Drive](https://github.com/autonomousvision/fail2drive), 100 route *pairs*

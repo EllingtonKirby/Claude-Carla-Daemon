@@ -10,36 +10,16 @@ exactly as it scores any other agent.
 
 ## Benchmarks
 
-Two, selected with `BENCHMARK=` and recorded in every `session.json` and `driver.json`. They are
-**different benchmarks** and their scores must never be pooled, averaged or directly compared.
+Two, selected with `BENCHMARK=` and recorded in every `session.json` and `driver.json`:
+`bench2drive` (the default) and `fail2drive`. They are **different benchmarks** -- different
+routes, simulator build, route budget and success rule -- and their scores must never be pooled,
+averaged or directly compared. Everything specific to the second one, including how it is run and
+reported, is in `benchmark/FAIL2DRIVE.md`.
 
-| | `bench2drive` (default) | `fail2drive` |
-|---|---|---|
-| what it measures | closed-loop driving across 220 routes and 44 scenarios | closed-loop **generalization**: 100 route pairs, each `Generalization_*` route a shifted version of an in-distribution `Base_*` reference |
-| headline number | mean DS | the **Base → Generalization drop** in the harmonic mean of DS and success rate |
-| tree | fetched + patched, `third_party/Bench2Drive` | vendored, `third_party/fail2drive` |
-| simulator | stock CARLA 0.9.15 | **its own CARLA build**, with 30 novel assets baked in |
-| towns | 7 towns | Town13 only (a large map) |
-| route budget | hard cap of 4000 ticks (200 s at 20 Hz) | no tick cap; the route ends on its own `RouteTimeoutBehavior` |
-| route succeeds if | every infraction list empty except `min_speed_infractions` | every infraction list empty except `min_speed_infractions` **and** `outside_route_lanes` |
-| sensors-track route plan | a point at most every 50 m | a point at most every 200 m (see below) |
-| report with | `tools/summarize_results.py` | `tools/f2d_score.py` |
-
-The last two rows are the ones that catch people out. The same drive scores differently under the
-two success rules, and on the sensors track a Fail2Drive driver is given a **much coarser** route
-plan than a Bench2Drive driver: that is stock Fail2Drive and what every model on its public
-leaderboard receives, and it matters because F2D routes are short (median 211 m, 92 of 200 under
-200 m), so a typical route's plan is little more than its start and end.
-
-Running F2D routes against a stock CARLA 0.9.15 does **not** error: CARLA substitutes default
-blueprints, so a scenario that should spawn a cow spawns a car and the run measures nothing it
-claims to. `scripts/setup_fail2drive.sh` and `scripts/env.sh` check the novel-asset packs for
-files; never bypass that check to make a run start.
-
-**Fail2Drive is a held-out test set.** Its routes, scenario definitions and novel assets must never
-be used to train or tune a driver. They are vendored in this repo so the benchmark is reproducible;
-the driver harnesses cannot reach them (`drive_loop` has no filesystem access at all, and
-`claude_p`'s sandbox denies `third_party/fail2drive/**`).
+That file sits deliberately outside what a driver may read, because Fail2Drive is a **held-out test
+set**: its routes, scenario definitions and assets are vendored in this repo so the benchmark is
+reproducible, not so that anything may be read off them (rule 6). The rules below are written to
+hold on either benchmark without naming what is in either.
 
 ## Tracks
 
@@ -70,19 +50,7 @@ it adds no information beyond what the sensors show.
 | standard | `benchmark/routes/standard.txt` | the pinned single-route benchmark (route 2091) |
 | dev10 | `benchmark/routes/dev10.txt` | broader 10-route set |
 
-**Fail2Drive.** Routes are named `<Split>_<Scenario>_<id>` in `third_party/fail2drive/fail2drive_split/`;
-`run_session.sh` and `run_eval.sh` accept either the name or the bare id. Every set is whole pairs,
-because a route without its twin cannot produce a drop.
-
-| set | file | routes | purpose |
-|---|---|---:|---|
-| f2d_pair | `benchmark/routes/f2d_pair.txt` | 2 | plumbing check: the install, the novel-asset CARLA build and the pair scoring. Not a result. |
-| f2d_smoke | `benchmark/routes/f2d_smoke.txt` | 8 | one pair per scenario class; exercises every class table. Still not a result. |
-| f2d_full | `benchmark/routes/f2d_full.txt` | 200 | the benchmark |
-
-A Fail2Drive number quoted from anything less than a substantial, balanced share of the 200 routes
-is not a Fail2Drive score. `tools/f2d_score.py` always prints its coverage
-(`n/100 Base + n/100 Generalization, n/100 complete pairs`); quote that line with the number.
+**Fail2Drive.** Named routes, grouped into three sets; see `benchmark/FAIL2DRIVE.md`.
 
 ## Rules
 
@@ -106,16 +74,16 @@ is not a Fail2Drive score. `tools/f2d_score.py` always prints its coverage
    until you get a good one.
 4. **Fixed settings:** `TM_SEED=0`, the default `carla_probe/config.yaml` apart from `access`,
    and `AGENT_MAX_TICKS`, `AGENT_BLOCKED_MIN_SPEED`, `AGENT_BLOCKED_MAX_TIME` and
-   `AGENT_SCENARIO_TIMEOUT` all unset -- which is the stock budget of whichever benchmark is
-   running (Bench2Drive: a 4000-tick, 200 s cap; Fail2Drive: no tick cap at all). Report any
-   deviation next to the result. Recording knobs that don't change what the driver sees are allowed: `SIM_RECORD` (on by
+   `AGENT_SCENARIO_TIMEOUT` all unset -- which leaves whichever benchmark is running on its own
+   stock budget (`status.ticks_left` counts it down, and is `null` where there is no tick cap).
+   Report any deviation next to the result. Recording knobs that don't change what the driver sees are allowed: `SIM_RECORD` (on by
    default) and `RECORD_CAMERA_EVERY` (periodic camera frames to `camera_log/`).
 5. **Justified decisions:** every driving command carries `why="..."` (enforced by the default
    `require_justification: true`). Justifications are part of the result and are reviewed against
    the replayed scene.
-6. **Probe protocol only.** No reading route XMLs, scenario definitions or simulator code, no editing
-   code or config during a run, and no human hints. On Fail2Drive this covers `third_party/fail2drive/`,
-   whose vendored routes and scenarios are the held-out test set itself.
+6. **Probe protocol only.** No reading route XMLs, scenario definitions or simulator code -- which
+   includes the vendored benchmark trees under `third_party/` -- no editing code or config during a
+   run, and no human hints.
 7. **Sensors track: no side channels.** The session directory holds privileged data
    (`evaluator.log`, `carla.log`, `result.json`). While driving, open only the files whose paths the
    daemon returns (`get_camera`, `render_bev`, `dump_frame`). Reading logs is allowed only to
@@ -127,7 +95,6 @@ is not a Fail2Drive score. `tools/f2d_score.py` always prints its coverage
 
 ```bash
 python tools/summarize_results.py sessions/<run_1> sessions/<run_2> ...     # both benchmarks
-python tools/f2d_score.py sessions/f2d_*                                   # Fail2Drive only
 ```
 
 The summary groups means by benchmark *and* track. Report for each route: DS (driving score), RC (route
@@ -138,12 +105,7 @@ harness and, for `drive_loop`, the prompt variant and `definition_sha256` (all i
 two runs of the same model under different harnesses are not the same measurement. Report the
 benchmark too; it is in `session.json` and `driver.json`.
 
-**Reporting Fail2Drive.** The per-route table is not the result. Report, from
-`tools/f2d_score.py`: the coverage line, Base and Generalization DS / SR / HM, and the **drop** in
-each. A drop needs both sides, so a partial run has no headline number -- the tool prints `n/a`
-rather than a drop, and that `n/a` is the honest answer, not a missing value to fill in with the
-per-split numbers. Per-class and per-scenario tables say *where* the model breaks; quote them with
-their `n`, which is often small enough that one route moves the row.
+Fail2Drive is reported differently; see `benchmark/FAIL2DRIVE.md`.
 
 **Caveat on reproducibility:** the traffic manager is seeded, but CARLA traffic is not bit-exact
 across runs, and traffic *reacts to the ego*, so different driving produces different traffic.

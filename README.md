@@ -92,6 +92,8 @@ don't count its runs as benchmark results.
 - [`docs/DESIGN.md`](docs/DESIGN.md): how the pause works, the Bench2Drive patch and the vendored
   Fail2Drive tree, limitations
 - [`benchmark/PROTOCOL.md`](benchmark/PROTOCOL.md): route sets, rules, reporting
+- [`benchmark/FAIL2DRIVE.md`](benchmark/FAIL2DRIVE.md): the Fail2Drive benchmark -- what it
+  measures, its route sets, how to report it. Operator-only: the driver sandbox denies it.
 
 ## Layout
 

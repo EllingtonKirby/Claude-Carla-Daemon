@@ -134,4 +134,4 @@ fi
 echo "=== COMPLETE: $(count_speed_limits) speed-limit maps, CARLA at $F2D_CARLA_ROOT"
 echo "    next:  BENCHMARK=fail2drive F2D_CARLA_ROOT=$F2D_CARLA_ROOT source scripts/env.sh"
 echo "    Fail2Drive is MIT. Its routes, scenarios and assets are a HELD-OUT test set:"
-echo "    never train or tune on them (benchmark/PROTOCOL.md)."
+echo "    never train or tune on them (benchmark/FAIL2DRIVE.md)."
