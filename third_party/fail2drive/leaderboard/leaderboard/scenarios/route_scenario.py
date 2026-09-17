@@ -429,8 +429,16 @@ class RouteScenario(BasicScenario):
         # These stop the route early to save computational time
         criteria.add_child(InRouteTest(
             self.ego_vehicles[0], route=self.route, offroad_max=30, terminate_on_failure=True))
+        # probe: env-tunable. A stalled agent micro-creeping at 0.1-0.3 m/s never trips the stock
+        # 0.1 m/s threshold and instead burns the whole route budget. The defaults below are
+        # Fail2Drive's own values, so with both variables unset the criterion is stock; raise
+        # AGENT_BLOCKED_MIN_SPEED on analysis splits to fail such stalls fast and label them
+        # honestly as blocked. Benchmark runs leave them unset.
         criteria.add_child(ActorBlockedTest(
-            self.ego_vehicles[0], min_speed=0.1, max_time=180.0, terminate_on_failure=True, name="AgentBlockedTest")
+            self.ego_vehicles[0],
+            min_speed=float(os.environ.get("AGENT_BLOCKED_MIN_SPEED", "0.1")),
+            max_time=float(os.environ.get("AGENT_BLOCKED_MAX_TIME", "180.0")),
+            terminate_on_failure=True, name="AgentBlockedTest")
         )
 
         return criteria

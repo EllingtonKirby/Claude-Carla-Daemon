@@ -123,6 +123,18 @@ class AutonomousAgent(object):
     def get_ros_version():
         return -1
 
+    def get_hero(self):
+        # probe: back-ported verbatim from Bench2Drive's fork of this file. carla_probe/agent.py
+        # resolves the ego through it on the privileged track; stock F2D has no such method.
+        # Read-only: it walks the actor list for role_name == 'hero' and stores it.
+        hero_actor = None
+        from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+        for actor in CarlaDataProvider.get_world().get_actors():
+            if 'role_name' in actor.attributes and actor.attributes['role_name'] == 'hero':
+                hero_actor = actor
+                break
+        self.hero_actor = hero_actor
+
     def set_global_plan(self, global_plan_gps, global_plan_world_coord):
         """
         Set the plan (route) for the agent
