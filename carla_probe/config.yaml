@@ -102,6 +102,15 @@ bev:
   lane_step_m: 2.0
   lane_max_nodes: 6000
 
+# route_truth: the dense route ahead in the ego frame, in `get_state` on the PRIVILEGED track only.
+# Not a driving input -- it is the label for scoring whether a driver saw the road's geometry, which
+# the sparse nav.route_points_ego it actually reasons from cannot tell you. Sampled every step_m out
+# to reach_m. The sensors track has no dense route at all (only the downsampled GPS plan), so the
+# field is absent there rather than approximated.
+route_truth:
+  step_m: 2.0
+  reach_m: 40.0
+
 # percept: the driver's only view of the sim -- the access-appropriate driving state plus JPGs for the
 # current tick. It is the only command that returns camera images: `cams` and `scale` are the
 # defaults when the command does not name its own; percept=true on a driving command attaches the
