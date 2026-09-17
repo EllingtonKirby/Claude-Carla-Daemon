@@ -167,7 +167,7 @@ worth revisiting; it would be a deviation to record next to any result.
   plus whatever the downsampler adds at junctions. This is stock F2D (see above), but it means the
   sensors track leans much harder on the cameras there than it does on Bench2Drive.
 - **The privileged scene has no static layout.** Fences, poles, walls and curbs are not in
-  `observe`, `get_state` or the BEV, and junction polygons only approximate the paved area. At
+  `percept`, `get_state` or the BEV, and junction polygons only approximate the paved area. At
   junction corners, check the cameras.
 - **BEV lane coverage.** Lanes are expanded through Driving lanes only, so a carriageway beyond a
   median is not drawn (its vehicles still are).

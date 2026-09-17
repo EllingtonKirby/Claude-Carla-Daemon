@@ -6,9 +6,8 @@ that apply to both benchmarks.
 
 **This file is operator-facing and the driver must not read it.** Fail2Drive is a held-out test
 set, and the paragraphs below name its scenario classes, its novel assets and its success rule --
-the sort of thing that primes a driver for what is coming. `drive_loop` has no filesystem access at
-all; `claude_p`'s sandbox allows `PROTOCOL.md` and `OPERATOR_GUIDE.md` but denies this file, and
-`third_party/fail2drive/` with it. Keep it that way: if something here turns out to be needed while
+the sort of thing that primes a driver for what is coming. The driver's sandbox allows
+`PROTOCOL.md` and `OPERATOR_GUIDE.md` but denies this file, and `third_party/fail2drive/` with it. Keep it that way: if something here turns out to be needed while
 driving, phrase it in `PROTOCOL.md` without the Fail2Drive specifics, the way the tick-cap and
 route-plan notes there already are.
 
@@ -68,7 +67,7 @@ Setup is `docs/HANDOFF.md` §2b (F2D needs its own CARLA build); the smoke run i
 ```bash
 BENCHMARK=fail2drive source scripts/env.sh
 BENCHMARK=fail2drive ACCESS=privileged bash scripts/run_session.sh Base_BadParking_0000
-BENCHMARK=fail2drive DRIVER=claude_p bash scripts/run_eval.sh Base_BadParking_0000 sensors claude-opus-5
+BENCHMARK=fail2drive bash scripts/run_eval.sh Base_BadParking_0000 sensors claude-opus-5
 ```
 
 Every route loads Town13 and takes several minutes; use `--wait 900` on the first `status` and do

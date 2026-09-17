@@ -65,12 +65,12 @@ HELP: Dict[str, str] = {
     "tick n [stop_on_collision]": "advance n ticks in the current mode",
     "run_until_frame frame": "advance until step >= frame",
     "run_until_event event [max_ticks]": "event = stopped | plan_done | collision* | infraction*",
-    "observe [k]": "compact driving view (privileged: scene around the ego; sensors: ego status + route)",
     "get_state": "full state (privileged: world + ego frame scene; sensors: raw ego sensors + pose estimate)",
     "get_score*": "live driving-score estimate with every infraction event",
-    "get_camera [cams] [scale]": "write camera JPGs, return paths",
-    "percept [cams] [scale] [k]": "observe + the camera JPGs for this tick in ONE round trip; add "
-                                  "percept=true to any driving command to get the next percept in its reply",
+    "percept [cams] [k]": "THE per-decision view, and the only one: the driving state plus a "
+                                  "JPG from every camera for this tick, in "
+                                  "ONE round trip. percept=true on a driving command returns the next "
+                                  "one with its result. Open the JPGs you need with your file reader",
     "render_bev": "top-down PNG (privileged: lanes, actors, lights; sensors: route + plan only)",
     "dump_frame": "state.json + cameras + bev.png into frames/frame_<step>/",
     "apply_plan waypoints ticks [target_speed] [stop_on_collision]":
@@ -168,6 +168,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._cameras = [dict(c) for c in cfg["cameras"]]
         self._percept_cams = list(cfg["percept"]["cams"])
         self._percept_scale = float(cfg["percept"]["scale"])
+        self._percept_on_advance = bool(cfg["percept"]["on_advance"])
         self._require_why = bool(cfg["require_justification"])
         self.pid = PIDController(cfg["pid"])
         # The route's tick budget, for `status.ticks_left` only. AGENT_MAX_TICKS is the analysis
@@ -378,7 +379,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             "coll0": len(self._collisions),
             "inf0": Counter(_event_key(ev) for ev in self._infraction_events()),
             "stop_on_collision": bool(cmd.get("stop_on_collision", False)),
-            "percept": dict(cmd) if cmd.get("percept") else None,
+            # percept.on_advance decides the default; percept=true/false on the command overrides.
+            "percept": dict(cmd) if cmd.get("percept", self._percept_on_advance) else None,
             **extra,
         }
 
@@ -472,16 +474,10 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             max_ticks = cmd.get("max_ticks")
             self._start_advance("event", cmd, event=event, max_ticks=int(max_ticks) if max_ticks else None)
             return None
-        if name == "observe":
-            k = int(cmd.get("k", self._nearest_k))
-            return {"ok": True, "observe": self._sensor_observe() if self._sensors_only else self._observe(k)}
         if name == "get_state":
             return {"ok": True, "state": self._sensor_state() if self._sensors_only else self._extract_state()}
         if name == "get_score":
             return {"ok": True, "score": self._live_score(detail=True)}
-        if name == "get_camera":
-            out_dir = self._out / "frames" / f"frame_{self.step:05d}"
-            return {"ok": True, "files": self._write_cameras(out_dir, cmd.get("cams"), float(cmd.get("scale", 1.0)))}
         if name == "percept":
             return {"ok": True, **self._percept(cmd)}
         if name == "render_bev":
@@ -775,12 +771,21 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         builder that already branches on `_sensors_only`, never read off `hero_actor` or the world.
         """
         cams = cmd.get("cams", self._percept_cams)
-        scale = float(cmd.get("scale", self._percept_scale))
+        # Image scale is NOT a driver argument: it is the harness's cost/detail control, and a
+        # driver-supplied value silently overrode whatever the config asked for, so it could not be
+        # varied experimentally at all. Set it in config.yaml; a `scale` in the command is ignored.
+        scale = self._percept_scale
         k = int(cmd.get("k", self._nearest_k))
         out_dir = self._out / "frames" / f"frame_{self.step:05d}"
+        files = self._write_cameras(out_dir, cams, scale)
+        # The directory once, then bare filenames. Absolute paths repeated per camera cost ~115
+        # tokens a reply and, on a track where nothing is evicted, are re-read on every later turn;
+        # this is ~45. The driver joins dir + name, which its file reader needs anyway because its
+        # working directory is not the session.
         return {
             "observe": self._sensor_observe() if self._sensors_only else self._observe(k),
-            "files": self._write_cameras(out_dir, cams, scale),
+            "frames_dir": str(out_dir.resolve()),
+            "files": [Path(f).name for f in files],
         }
 
     # ------------------------------------------------------------------ sensors-only views
@@ -820,7 +825,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
                     "accel_left_mps2": es["accel_left_mps2"]},
             "nav": st["nav"],
             "cameras": st["cameras"],
-            "legend": ("sensors access: the scene is only in the cameras (get_camera). Route points are in the "
+            "legend": ("sensors access: the scene is only in the cameras (percept). Route points are in the "
                        "ego frame (fwd ahead, left to the LEFT), from the leaderboard's sparse GPS plan and a "
                        "noisy GNSS pose estimate, so treat them as approximate"),
         }

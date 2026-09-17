@@ -8,27 +8,27 @@
 #
 # Blocks until the route is scored (run it in the background). Steps:
 #   1. launch scripts/run_session.sh and wait until the route is loaded and paused;
-#   2. run the driver, streaming its transcript to the session;
-#   3. if the driver exits before the route ends, abort the session (scored as an agent failure).
+#   2. build the driver's sandbox: an empty working directory outside the repo, no inherited Claude
+#      Code settings, and permissions limited to the probe client, the session's frames/ and the
+#      three driver documents;
+#   3. pre-flight isolation check: a cheap model must be DENIED reading the session directory;
+#   4. run the driver (`claude -p`, canonical prompt below), streaming its transcript to the session;
+#   5. if the driver exits before the route ends, abort the session (scored as an agent failure).
 #
-# Two drivers, selected with DRIVER. They are different configurations: never average or directly
-# compare their scores (docs/HANDOFF.md §4.1, benchmark/PROTOCOL.md).
-#   drive_loop (default)  carla_probe/drive_loop.py: a purpose-built loop on the Messages API whose
-#                         whole action space is the probe tools. PROTOCOL rule 4 -- the driver uses
-#                         only the probe protocol -- holds by construction: it has no filesystem
-#                         access to sandbox. Needs Anthropic API credentials.
-#   claude_p              the original isolated `claude -p` driver, kept so the runs made with it
-#                         stay reproducible. Being a general-purpose agent with Bash and Read, it
-#                         additionally needs a sandbox and a pre-flight isolation check in which a
-#                         cheap model must be DENIED reading the session directory.
+# The driver is `claude -p`, so a run is billed to whatever the `claude` CLI is logged in to --
+# normally a Claude subscription, in which case the reported total_cost_usd is an API-equivalent
+# figure rather than a bill.
 #
 # Env: BENCHMARK (bench2drive | fail2drive): which benchmark to score on. The two are not
 #        comparable -- different routes, CARLA build, route budget and success rule. Fail2Drive is
 #        scored in PAIRS (tools/f2d_score.py); one route on its own is not an F2D result.
 #      GPU_RANK (0)  CARLA_PORT (20000)  PROBE_PORT (8790): stride CARLA_PORT by >= 10 per parallel run
-#      DRIVER (drive_loop)  LOAD_TIMEOUT_S (900)
-#      drive_loop only: PROMPT_VARIANT (baseline|guided)  EFFORT (high)  KEEP_IMAGES (3)
-#      claude_p only:   ISOLATION_CHECK (1)  CHECK_MODEL (haiku)
+#      LOAD_TIMEOUT_S (900)  ISOLATION_CHECK (1; 0 skips step 3)  CHECK_MODEL (haiku)
+#      AUTOCOMPACT (auto): Claude Code's auto-compact window, `auto` or 100k-1M. A THRESHOLD, not a
+#           cadence: it fires when the window reaches that size, so 100k is the tightest cap
+#           available. Lossy -- compaction summarizes, and a summarized camera frame is gone -- but
+#           the daemon re-supplies the scene on every percept, so what it destroys is looks the
+#           driver has already acted on.
 #      SIM_RECORD (1)  RECORD_CAMERA_EVERY (config value): recording knobs, passed to run_session.sh
 set -euo pipefail
 
@@ -38,12 +38,7 @@ ROUTE="${1:?$USAGE}"
 TRACK="${2:?$USAGE}"
 MODEL="${3:?$USAGE}"
 case "$TRACK" in sensors | privileged) ;; *) echo "ERROR: track must be sensors or privileged" >&2; exit 1 ;; esac
-: "${DRIVER:=drive_loop}"
-case "$DRIVER" in drive_loop | claude_p) ;; *) echo "ERROR: DRIVER must be drive_loop or claude_p" >&2; exit 1 ;; esac
-# Fail before CARLA spends two minutes loading a town.
-if [ "$DRIVER" = claude_p ] || [ "${ISOLATION_CHECK:-1}" = 1 ]; then
-    command -v claude >/dev/null || { echo "ERROR: claude (Claude Code CLI) not on PATH" >&2; exit 1; }
-fi
+command -v claude >/dev/null || { echo "ERROR: claude (Claude Code CLI) not on PATH" >&2; exit 1; }
 
 export BENCHMARK="${BENCHMARK:-bench2drive}"
 case "$BENCHMARK" in
@@ -62,9 +57,7 @@ fi
 : "${LOAD_TIMEOUT_S:=900}"
 : "${ISOLATION_CHECK:=1}"
 : "${CHECK_MODEL:=haiku}"
-: "${PROMPT_VARIANT:=baseline}"
-: "${EFFORT:=high}"
-: "${KEEP_IMAGES:=3}"
+: "${AUTOCOMPACT:=auto}"
 export GPU_RANK CARLA_PORT PROBE_PORT
 
 SESSION_DIR="$(realpath -m "${4:-$REPO_ROOT/sessions/$(date +%Y%m%d_%H%M%S)_route_${ROUTE}_${TRACK}}")"
@@ -72,13 +65,8 @@ SESSION_DIR="$(realpath -m "${4:-$REPO_ROOT/sessions/$(date +%Y%m%d_%H%M%S)_rout
 mkdir -p "$SESSION_DIR"
 PY="$REPO_ROOT/.venv/bin/python"
 ADDR="127.0.0.1:$PROBE_PORT"
-if [ "$DRIVER" = drive_loop ]; then
-    "$PY" -c 'import anthropic' 2>/dev/null || {
-        echo "ERROR: the anthropic SDK is not installed in .venv (uv pip install --python .venv/bin/python anthropic)" >&2
-        exit 1; }
-fi
 
-echo "=== eval: $BENCHMARK route $ROUTE, track $TRACK, model $MODEL, driver $DRIVER"
+echo "=== eval: $BENCHMARK route $ROUTE, track $TRACK, model $MODEL"
 echo "    session: $SESSION_DIR"
 
 # ---- 1. session --------------------------------------------------------------------------------
@@ -99,10 +87,9 @@ if ! access="$("$PY" -m carla_probe.client "$ADDR" --wait "$LOAD_TIMEOUT_S" stat
 fi
 [ "$access" = "$TRACK" ] || abort "session reports access=$access, expected $TRACK"
 
-# ---- 2. driver sandbox (claude_p only: drive_loop has no filesystem access to sandbox) -----------
-if [ "$DRIVER" = claude_p ]; then
-    DRIVER_WS="$(mktemp -d "${TMPDIR:-/tmp}/probe_driver.XXXXXX")"
-    cat > "$DRIVER_WS/settings.json" <<EOF
+# ---- 2. driver sandbox ---------------------------------------------------------------------------
+DRIVER_WS="$(mktemp -d "${TMPDIR:-/tmp}/probe_driver.XXXXXX")"
+cat > "$DRIVER_WS/settings.json" <<EOF
 {
   "sandbox": {"enabled": false},
   "env": {"PYTHONPATH": "$REPO_ROOT", "CARLA_PROBE_ADDR": "$ADDR"},
@@ -117,8 +104,8 @@ if [ "$DRIVER" = claude_p ]; then
   }
 }
 EOF
-    # The canonical driver prompt. Changing it makes results non-comparable: note it next to results.
-    cat > "$DRIVER_WS/prompt.txt" <<EOF
+# The canonical driver prompt. Changing it makes results non-comparable: note it next to results.
+cat > "$DRIVER_WS/prompt.txt" <<EOF
 You are the driver in a CARLA $LEADERBOARD_NAME benchmark run on the $TRACK track. A probe session for
 one route is already running and paused, waiting for your commands.
 
@@ -134,16 +121,22 @@ $REPO_ROOT/docs/OPERATOR_GUIDE.md and $REPO_ROOT/benchmark/PROTOCOL.md, and foll
 Drive the route to the end. Stop when an advance returns route_end or the client reports that
 the daemon closed the connection. Then reply with a short account of the drive.
 EOF
-    cp "$DRIVER_WS/prompt.txt" "$DRIVER_WS/settings.json" "$SESSION_DIR/"
-    DRIVER_FLAGS=(--permission-mode dontAsk --tools "Bash,Read" --setting-sources "" --settings "$DRIVER_WS/settings.json")
+cp "$DRIVER_WS/prompt.txt" "$DRIVER_WS/settings.json" "$SESSION_DIR/"
+# --setting-sources "" is load-bearing for isolation, not just a settings.json switch: it also stops
+# CLAUDE.md / memory being loaded, from the sandbox AND from ~/.claude. Verified -- with the flag a
+# CLAUDE.md in the working directory is ignored; without it, its contents reach the driver. Dropping
+# it would silently add an instruction channel outside the canonical prompt, and one that nothing
+# hashes into driver.json. Leave it empty.
+DRIVER_FLAGS=(--permission-mode dontAsk --tools "Bash,Read" --setting-sources "" --settings "$DRIVER_WS/settings.json"
+              --autocompact "$AUTOCOMPACT")
 
-    # ---- 3. isolation check --------------------------------------------------------------------------
-    if [ "$ISOLATION_CHECK" = "1" ]; then
-        echo "    isolation check ($CHECK_MODEL)"
-        (cd "$DRIVER_WS" && claude -p "This is a permissions test. Try each, one tool call at a time, even if you expect a denial: (1) Bash: cat $SESSION_DIR/session.json (2) Bash: ls $SESSION_DIR (3) Read tool on $SESSION_DIR/config.yaml. Then say done." \
-            --model "$CHECK_MODEL" --output-format stream-json --verbose "${DRIVER_FLAGS[@]}" \
-            < /dev/null > "$DRIVER_WS/isolation_check.jsonl" 2>&1) || true
-        if ! "$PY" - "$DRIVER_WS/isolation_check.jsonl" <<'PY'
+# ---- 3. isolation check --------------------------------------------------------------------------
+if [ "$ISOLATION_CHECK" = "1" ]; then
+    echo "    isolation check ($CHECK_MODEL)"
+    (cd "$DRIVER_WS" && claude -p "This is a permissions test. Try each, one tool call at a time, even if you expect a denial: (1) Bash: cat $SESSION_DIR/session.json (2) Bash: ls $SESSION_DIR (3) Read tool on $SESSION_DIR/config.yaml. Then say done." \
+        --model "$CHECK_MODEL" --output-format stream-json --verbose "${DRIVER_FLAGS[@]}" \
+        < /dev/null > "$DRIVER_WS/isolation_check.jsonl" 2>&1) || true
+    if ! "$PY" - "$DRIVER_WS/isolation_check.jsonl" <<'PY'
 import json, sys
 calls, leaked = 0, []
 for line in open(sys.argv[1]):
@@ -167,43 +160,25 @@ if calls < 3 or leaked:
     print(f"    isolation check FAILED: {calls} tool calls, leaks: {leaked}", file=sys.stderr)
     sys.exit(1)
 PY
-        then
-            abort "driver sandbox is not isolated (transcript: $DRIVER_WS/isolation_check.jsonl)"
-        fi
+    then
+        abort "driver sandbox is not isolated (transcript: $DRIVER_WS/isolation_check.jsonl)"
     fi
-
 fi
 
+
 # ---- 4. driver -----------------------------------------------------------------------------------
-if [ "$DRIVER" = claude_p ]; then
-    cat > "$SESSION_DIR/driver.json" <<EOF
-{"driver": "$DRIVER", "model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
+cat > "$SESSION_DIR/driver.json" <<EOF
+{"model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
+ "autocompact": "$AUTOCOMPACT",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}
 EOF
-    echo "    driver running (transcript: $SESSION_DIR/driver_transcript.jsonl)"
-    set +e
-    (cd "$DRIVER_WS" && claude -p "$(cat prompt.txt)" --model "$MODEL" --output-format stream-json --verbose \
-        "${DRIVER_FLAGS[@]}" < /dev/null > "$SESSION_DIR/driver_transcript.jsonl" 2> "$SESSION_DIR/driver_stderr.log")
-    driver_rc=$?
-    set -e
-else
-    # drive_loop writes prompt.txt + tools.json into the session itself: together they ARE the
-    # benchmark definition, and their hash lands in driver.json below (from driver_loop.jsonl).
-    cat > "$SESSION_DIR/driver.json" <<EOF
-{"driver": "$DRIVER", "model": "$MODEL", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
- "prompt_variant": "$PROMPT_VARIANT", "effort": "$EFFORT", "keep_images": $KEEP_IMAGES,
- "started": "$(date -Iseconds)"}
-EOF
-    echo "    driver running (log: $SESSION_DIR/driver_loop.jsonl)"
-    set +e
-    "$PY" -m carla_probe.drive_loop --addr "$ADDR" --session "$SESSION_DIR" \
-        --model "$MODEL" --benchmark "$BENCHMARK" --prompt "$PROMPT_VARIANT" --effort "$EFFORT" \
-        --keep-images "$KEEP_IMAGES" \
-        < /dev/null > "$SESSION_DIR/driver_stdout.log" 2> "$SESSION_DIR/driver_stderr.log"
-    driver_rc=$?
-    set -e
-fi
+echo "    driver running (transcript: $SESSION_DIR/driver_transcript.jsonl)"
+set +e
+(cd "$DRIVER_WS" && claude -p "$(cat prompt.txt)" --model "$MODEL" --output-format stream-json --verbose \
+    "${DRIVER_FLAGS[@]}" < /dev/null > "$SESSION_DIR/driver_transcript.jsonl" 2> "$SESSION_DIR/driver_stderr.log")
+driver_rc=$?
+set -e
 
 # ---- 5. finish -----------------------------------------------------------------------------------
 stopped_early=false
@@ -215,17 +190,12 @@ for _ in $(seq 1 12); do
     fi
     sleep 5
 done
-"$PY" - "$SESSION_DIR/driver.json" "$driver_rc" "$stopped_early" "$SESSION_DIR/driver_loop.jsonl" <<'PY'
-import datetime, json, pathlib, sys
-path, rc, early, loop_log = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "true", pathlib.Path(sys.argv[4])
+"$PY" - "$SESSION_DIR/driver.json" "$driver_rc" "$stopped_early" <<'PY'
+import datetime, json, sys
+path, rc, early = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "true"
 d = json.load(open(path))
 d.update(ended=datetime.datetime.now().astimezone().isoformat(timespec="seconds"), driver_exit_code=rc,
          driver_stopped_before_route_end=early)
-if loop_log.is_file():  # drive_loop: the definition hash and turn count live in its own log
-    rows = [json.loads(line) for line in loop_log.read_text().splitlines() if line.strip()]
-    end = next((r for r in reversed(rows) if r.get("event") == "end"), {})
-    d.update(definition_sha256=end.get("definition_sha256"), turns=end.get("turns"),
-             loop_stop_reason=end.get("reason"))
 json.dump(d, open(path, "w"), indent=1)
 PY
 if [ "$stopped_early" = true ]; then

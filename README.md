@@ -56,7 +56,7 @@ BENCHMARK=fail2drive source scripts/env.sh
 ACCESS=sensors bash scripts/run_session.sh 25378 &   # smoke route; 2091 is the standard benchmark
 python -m carla_probe.client --wait 600 status       # waits for CARLA + route load
 python -m carla_probe.client observe
-python -m carla_probe.client get_camera cams='["CAM_FRONT"]'   # prints a JPG path
+python -m carla_probe.client percept cams='["CAM_FRONT"]'      # state + a JPG path
 python -m carla_probe.client apply_plan 'waypoints=[[4,0],[8,0],[12,0],[16,0],[20,0]]' target_speed=6 ticks=40 \
     why="lane ahead is clear; follow it at 6 m/s"      # every driving command carries a justification
 ```
@@ -98,8 +98,8 @@ don't count its runs as benchmark results.
 ## Layout
 
 ```
-carla_probe/        the daemon and the driver: agent.py (leaderboard agent) drive_loop.py (benchmark
-                    driver) server.py client.py geometry.py pid.py bev.py config.yaml
+carla_probe/        the daemon: agent.py (leaderboard agent) server.py client.py geometry.py
+                    pid.py bev.py config.yaml
 scripts/            shell only, everything needed to set up and launch a run: setup_carla.sh
                     setup_bench2drive.sh setup_fail2drive.sh env.sh run_session.sh run_eval.sh
                     clean_carla.sh

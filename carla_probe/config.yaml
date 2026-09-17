@@ -52,13 +52,14 @@ require_justification: true
 # apply_plan without target_speed: waypoints are this many seconds apart, so spacing encodes speed.
 plan_interval_s: 0.5
 
-# Plan-tracking PID (carla_probe/pid.py). These are the gains validated in the original probe
-# sessions. aim_dist is the steering lookahead (m): lower it for tighter low-speed junction tracking.
+# Plan-tracking PID (carla_probe/pid.py), ported from dynamo_nav123d/eval_carla/team_code with the
+# lateral gains its run configs converged on (turn 2.0/0.5/1.0 over a 15-sample window, aim_dist 7).
+# Their note on aim_dist: "was 12: shorter look-ahead -> track sharp turns instead of cutting them".
 pid:
-  turn_kp: 0.75
-  turn_ki: 0.75
-  turn_kd: 0.3
-  turn_n: 40
+  turn_kp: 2.0
+  turn_ki: 0.5
+  turn_kd: 1.0
+  turn_n: 15
   speed_kp: 5.0
   speed_ki: 0.5
   speed_kd: 1.0
@@ -67,8 +68,28 @@ pid:
   clip_delta: 0.25
   brake_speed: 0.4
   brake_ratio: 1.1
-  aim_dist: 12.0
-  max_speed: 1.0e9   # hard cap on the desired speed (m/s); 1e9 = off
+  aim_dist: 7.0
+  # Hard cap on the desired speed (m/s); 1e9 = off. NOTE this silently clamps a driver's explicit
+  # target_speed, unlike the reference project where it capped a learned model's noisy speed output.
+  max_speed: 1.0e9
+
+  # Steering aim point. `fixed` is the TransFuser rule the gains above were tuned against: it snaps
+  # to a WAYPOINT, so the real lookahead is the driver's spacing, not aim_dist -- 4 m on a 4 m-spaced
+  # plan, 15 m on a 15 m-spaced one -- and it can degenerate to aiming at the ego itself once the
+  # ego reaches a waypoint. `adaptive` and `lead` interpolate along the plan instead, so the
+  # lookahead means what it says and scales with speed: close when slow, far when fast.
+  # Switching away from `fixed` changes the plant the gains above were fitted to -- re-validate.
+  steer_mode: adaptive       # fixed | adaptive | lead
+  lookahead_min: 2.5         # adaptive only: arc-length clip (m)
+  lookahead_max: 10.5
+  speed_scale: 0.9755321901954155    # adaptive + lead: lookahead = speed_scale*v + speed_offset
+  speed_offset: 1.9152884533402488
+  curvature_gain: 3.5        # lead only: look up to +2 m farther through bends; 0 = off
+  brake_zero_steer: false    # hold steering error at 0 while braking, so the turn integral drains
+
+  # Longitudinal. `pid` is the speed PID above; `lead` is an expert-tuned regression map with no
+  # integral state, so launches are crisp and a ~zero target is a hard stop.
+  long_mode: pid             # pid | lead
 
 # render_bev: ego-centred extent (m) and resolution. draw_lanes expands the lane graph around the
 # ego (lane_step_m sample spacing, capped at lane_max_nodes samples).
@@ -81,13 +102,25 @@ bev:
   lane_step_m: 2.0
   lane_max_nodes: 6000
 
-# percept: one round trip returning the access-appropriate `observe` plus the camera JPGs for the
-# current tick, instead of observe + get_camera + one read per image. `cams` and `scale` are the
+# percept: the driver's only view of the sim -- the access-appropriate driving state plus JPGs for the
+# current tick. It is the only command that returns camera images: `cams` and `scale` are the
 # defaults when the command does not name its own; percept=true on a driving command attaches the
 # same payload to the reply that reports the advance's outcome.
 percept:
-  cams: [CAM_FRONT, CAM_FRONT_LEFT, CAM_FRONT_RIGHT]
-  scale: 1.0
+  # Empty = every camera in `cameras` below, which is the default because a view the percept does
+  # not offer is effectively invisible: the driver can only ask for what it knows to ask for. This
+  # is free -- the reply carries PATHS, so the cost of a view is paid only when the driver opens it.
+  # Naming a subset here hides the rest; do that only to deliberately restrict what a driver can see.
+  cams: []
+  # Resolution of the JPGs a percept writes, as a fraction of the `cameras` sizes below. The
+  # harness's control, not the driver's: a `scale` argument on the command is ignored, so this can
+  # be varied experimentally. Image tokens go as the PIXEL COUNT, so 0.5 is a quarter of the tokens.
+  scale: 0.5
+  # Attach a percept to every driving command's reply (percept=true on the command does it for one).
+  # OFF by default: a percept the driver did not want is ~470 tokens it cannot evict, and deciding
+  # when to look is part of what the sensors track measures. Turn it on only to take that decision
+  # away deliberately.
+  on_advance: false
 
 record:
   trajectory: true            # per-tick pose + control to trajectory.jsonl (cheap)

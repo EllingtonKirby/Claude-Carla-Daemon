@@ -13,7 +13,6 @@ dependencies = []  # the client is pure stdlib; the simulation side is installed
 
 [project.optional-dependencies]
 dev = ["pytest", "numpy", "opencv-python-headless", "pyyaml"]
-driver = ["anthropic"]  # carla_probe/drive_loop.py, the benchmark driver
 
 [project.scripts]
 carla-probe = "carla_probe.client:cli"
