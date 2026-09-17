@@ -22,6 +22,8 @@
 #      SIM_RECORD (1): CARLA recorder log of the whole simulation into SESSION_DIR (replay with
 #        tools/replay_sim.py); 0 turns it off
 #      RECORD_CAMERA_EVERY (config value): log the record.camera_id frame every N ticks to camera_log/
+#      VLA (config value): on | off -- the learned driving policy behind the `drive` command
+#        (carla_probe/vla_server.py must be running: scripts/run_vla_server.sh)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -66,6 +68,13 @@ if [ -n "${ACCESS:-}" ]; then
     case "$ACCESS" in
         privileged | sensors) sed -i -E "s/^access:.*/access: $ACCESS/" "$SESSION_DIR/config.yaml" ;;
         *) echo "ERROR: ACCESS must be privileged or sensors, got '$ACCESS'" >&2; exit 1 ;;
+    esac
+fi
+if [ -n "${VLA:-}" ]; then
+    case "$VLA" in
+        on)  sed -i -E '/^vla:/,/^[a-z]/ s/^(\s*enabled:).*/\1 true/'  "$SESSION_DIR/config.yaml" ;;
+        off) sed -i -E '/^vla:/,/^[a-z]/ s/^(\s*enabled:).*/\1 false/' "$SESSION_DIR/config.yaml" ;;
+        *) echo "ERROR: VLA must be on or off, got '$VLA'" >&2; exit 1 ;;
     esac
 fi
 if [ -n "${RECORD_CAMERA_EVERY:-}" ]; then
