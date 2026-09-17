@@ -31,8 +31,9 @@ You are the driver. There is no autopilot: the ego brakes (`hold`) until you com
 
 ## 2. Drive loop
 
-Read `docs/OPERATOR_GUIDE.md` §3–8 once before the first command (§7 is the sensors-track
-technique). Then repeat:
+Read `docs/OPERATOR_GUIDE.md` §3–10 once before the first command (§6 is this loop, §7 the plan
+geometry, §8 the sensors-track technique). Then repeat it, **every decision, for the whole route** —
+a route is tens of these cycles, not one:
 
 1. **Look.**
    - *Sensors:* `percept` — speed, route points, next turn, and a JPG path from every camera. Open
@@ -41,12 +42,16 @@ technique). Then repeat:
    - *Privileged:* `percept` (lane, route, lights, signs, nearest actors, plus the camera JPGs),
      and `render_bev` when the geometry is unclear.
 2. **Decide the next 1–2 s.** Build `apply_plan` waypoints (ego frame: `fwd` ahead, `left` to the
-   LEFT) from the route points and the lane. Set `target_speed` to a safe speed, and 0 to stop.
-3. **Advance.** Use `apply_plan ... ticks=<5-40> why="..."`: short near other road users, longer
-   on empty road. Privileged only: add `stop_on_collision=true`. Every driving command needs `why`:
-   what you observed and why this command follows from it (it is logged for review).
-4. **Check the reply** (`result.reason`, status; on privileged also `new_infractions` and
-   `status.score`) and adapt.
+   LEFT) from the route points and the lane — spaced 2–3 m apart, reaching about 10 m past where
+   the burst will end, because the controller steers by a point only a few metres ahead and ignores
+   everything past it (§7). Set `target_speed` to a safe speed, and 0 to stop.
+3. **Advance and look in one command.** `apply_plan ... ticks=<5-40> percept=true why="..."` returns
+   the next look inside the reply that reports the outcome, so a decision costs one round trip and
+   you are never planning from a stale picture. Short bursts near other road users, longer on empty
+   road. Privileged only: add `stop_on_collision=true`. Every driving command needs `why`: what you
+   observed and why this command follows from it (it is logged for review).
+4. **Check the reply** (`result.reason`, `status.plan_done`; on privileged also `new_infractions`
+   and `status.score`), open the images it names, and go back to step 2.
 
 Stop when an advance returns `route_end` or the connection closes.
 

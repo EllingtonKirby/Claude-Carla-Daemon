@@ -88,29 +88,82 @@ reviewed against the scene after the run. Write the reason you actually acted on
   hand: `fwd = dx·cos(yaw) + dy·sin(yaw)`, `left = dx·sin(yaw) − dy·cos(yaw)`. Prefer the ego-frame
   fields.
 
-## 6. Driving with `apply_plan`
+## 6. The drive loop
 
-- `waypoints = [[fwd, left], ...]`, at least 2 points, in the CURRENT ego frame. The plan is pinned
-  to the world when issued, so later ticks track the same path as the ego moves.
-- **Speed.** With `target_speed` (m/s) the controller holds that speed along the path. Without it,
-  waypoints are `plan_interval_s` (0.5 s) apart, so spacing encodes speed (3 m apart ≈ 6 m/s).
-  `target_speed=0` brakes to a stop.
-- **Geometry.** Use 5–8 points reaching 15–40 m ahead. The steering aims at a point interpolated
-  along the plan whose distance grows with speed (about 2.5 m at a crawl, up to 10.5 m above
-  ~9 m/s), so the first few metres of the plan are what steer you through a slow junction and the
-  far end is what steers you on open road. Hand-drawn curves drift through sharp turns, so anchor
-  waypoints to something real: the lane (privileged `lane.*`, or the lane markings you see on
-  camera) and `nav.route_points_ego`.
-- **When the plan is consumed** (its endpoint is no longer ahead), `plan_done` becomes true and
-  the ego brakes. Issue the next plan before that point to keep moving.
-- **Burst length.** Use 20–40 ticks (1–2 s) on open road and 5–15 near interactions. Re-observe
-  between bursts.
+Look, plan, advance, **repeat**. All three, every decision. The loop is the technique; everything
+in §7 only decides how well one turn of it goes.
 
-## 7. Driving on the sensors track
+```
+percept                                                            # the first look
+apply_plan waypoints=[...] target_speed=6 ticks=20 percept=true why="..."
+apply_plan waypoints=[...] target_speed=6 ticks=20 percept=true why="..."
+...
+```
 
-- **The scene exists only in the cameras.** Take a `percept` every decision: open `CAM_FRONT` always,
-  plus the side cameras at junctions and merges, and `CAM_BACK` before lane changes or reversing
-  your speed plan.
+- **Look on every decision, not once per route.** `percept=true` on the driving command returns the
+  next look inside the same reply that reports the advance, so looking costs no extra round trip and
+  no extra command. Nothing watches the road between your commands: there is no autopilot, no
+  collision warning, and on the sensors track no feedback of any kind. A plan issued from a picture
+  taken thirty seconds ago is a guess about a scene that has moved.
+- **Open the images the percept names.** The reply carries *paths*, not pixels: an image you did
+  not open is an image you did not see. `CAM_FRONT` every decision; the side cameras at junctions,
+  merges and anything crossing; `CAM_BACK` about once a second.
+- **The route is not the scene.** `nav.route_points_ego` tells you where the road goes, and it says
+  exactly the same thing whether the lane ahead is empty or has a stopped truck in it. Driving on
+  route points alone tracks the route accurately into whatever is standing on it.
+- **Read the reply before the next plan.** `result.reason` says why the advance ended (`ticks` for
+  a completed `apply_plan` burst, or `stopped` / `plan_done` / `max_ticks` for a `run_until_event`,
+  `route_end` at the finish). `status` carries speed, route progress and `ticks_left`, and
+  **`status.plan_done: true` means the plan ran out before the burst did** — the ego spent the rest
+  of it braking, so the plan was too short (§7).
+
+## 7. Driving with `apply_plan`
+
+`waypoints = [[fwd, left], ...]`, at least 2 points, in the CURRENT ego frame. The plan is pinned to
+the world when issued, so later ticks track the same path as the ego moves along it.
+
+**What the controller actually reads.** Each tick it starts from the waypoint nearest the ego, walks
+forward along the plan, and steers at the single point it finds **L metres along**, interpolated
+between the two waypoints that bracket it. L grows with speed: ≈2.9 m at 1 m/s, 4.8 m at 3 m/s,
+7.8 m at 6 m/s, and it caps at 10.5 m above ~8.8 m/s. **Nothing beyond L steers the car.** A plan
+reaching 40 m is not read 40 m ahead; the far end only decides when the plan runs out.
+
+So a plan has exactly two jobs: be *accurate* where the steering reads, and be *long enough* to
+outlive the burst.
+
+- **Space the points 2–3 m apart over at least the first 10 m.** A segment is the resolution of your
+  steering: with points 5 m apart the controller aims at a straight line drawn across the curve you
+  meant. And because the walk starts at the *nearest* waypoint, which is behind you about half the
+  time, up to half your spacing is spent walking backwards before any of L counts forward — coarse
+  spacing quietly shortens the lookahead as well as blunting it.
+- **Reach ≈ burst distance + 10 m.** The burst covers `target_speed × ticks × 0.05` metres; add the
+  lookahead so the steering still has path in front of it on the last tick. At 6 m/s for 20 ticks
+  that is 6 + 10 ≈ 16 m, which at 2.5 m spacing is 6–7 points. Reaching much farther buys nothing:
+  you will replace the plan within a second anyway, and spreading the same points over more distance
+  is exactly how the near geometry gets blunted.
+- **When the plan runs out** — its last point is behind you, or within 1.5 m — `plan_done` fires and
+  the ego **brakes for the whole remainder of the burst**, however many ticks are left. Size the
+  reach so this never happens mid-burst; `status.plan_done` in the reply tells you when it did.
+  Points beyond ~12 m may be spaced as widely as you like: nothing steers by them.
+- **Always pass `target_speed`** (m/s). Without it the controller reads the speed off your spacing
+  (mean spacing ÷ `plan_interval_s`, 0.5 s), so the close spacing above would command a crawl, and
+  the implied speed would drift as the plan is consumed. `target_speed=0` brakes to a stop.
+- **Straight ahead is not "stay in the lane".** A plan of points with `left = 0` freezes the lateral
+  offset you have *right now*: half a metre off centre, and it holds you half a metre off centre for
+  the whole burst. Put the points where the car should be, not where it already is.
+- **Anchor the geometry to something real.** Hand-drawn curves drift through sharp turns, so build
+  the near points from the lane (privileged `lane.*`, or the lane markings you can see on camera)
+  and the far ones from `nav.route_points_ego`. A route point 40 m out tells you where you are
+  going; it tells you nothing about where the road is in the next 10 m.
+- **Burst length:** 20–40 ticks (1–2 s) on open road, 5–15 near other road users.
+- **Don't crawl.** Driving far below the traffic around you is a scored infraction in its own
+  right, and it also shrinks L: at 1 m/s the controller steers at a point under 3 m away and
+  follows every wobble in your first two waypoints. Pick a speed you can justify and hold it.
+
+## 8. Driving on the sensors track
+
+- **The scene exists only in the cameras** — which is why §6's look-every-decision rule is not
+  advice here but the whole of your perception.
 - **Distances from images.** The JPGs may be written at a reduced resolution, so work from the image
   you actually opened rather than from a fixed pixel count. `CAM_FRONT` has a 100° horizontal FOV,
   which makes its focal length ≈ 0.42 × the image width W in pixels. An object of real height H
@@ -120,14 +173,15 @@ reviewed against the scene after the run. Write the reason you actually acted on
   apart. Compare frames before committing to a gap.
 - **Route points are approximate.** The plan is sparse, so the polyline between route waypoints
   cuts corners, and the pose estimate carries ~0.5 m GNSS noise. Use `nav.route_points_ego` and
-  `next_command` for *where* to go, and the visible lane for *exactly where* to drive.
+  `next_command` for *where* to go, and the visible lane for *exactly where* to drive — which is
+  also what §7's near waypoints need.
 - **No speed limit and no feedback.** Read speed signs; otherwise drive with surrounding traffic.
   Nothing tells you about a collision or infraction. A sharp negative `accel_fwd_mps2` spike that
   you did not command is a strong hint that you hit something.
 - **Traffic lights and stop signs**: find them on camera, and stop at the stop line on your side of
   the junction.
 
-## 8. Hard-won lessons (both tracks)
+## 9. Hard-won lessons (both tracks)
 
 - **Short bursts near other road users.** Long advances on a stale read are how cars get
   rear-ended. Nosing into a stopped vehicle can wedge the ego in an **unrecoverable traffic-manager
@@ -151,24 +205,21 @@ reviewed against the scene after the run. Write the reason you actually acted on
 - **Keep up with the flow of traffic.** Driving far below the speed of the traffic around you is an
   infraction, not a safe default.
 
-## 9. Operating efficiently
+## 10. Operating efficiently
 
-- One `percept` per decision, plus `render_bev` when the geometry is unclear (privileged).
-  `percept=true` on the driving command folds the next look into the reply you were already waiting
-  for, so a decision costs one round trip rather than two.
 - **Use all the cameras.** A percept writes a JPG from every one, and the side and rear views show
   things the front simply cannot. Opening an image costs tokens and it stays in your context, but
-  driving on a partial view costs more than the tokens save.
-- **Check `CAM_BACK` at least once a second**, which means on essentially every decision. A vehicle
-  closing on you, an emergency vehicle, traffic you are about to pull in front of: none of it
-  appears in `CAM_FRONT`, in the route, or in the ego sensors. Something following you gives you no
-  cue at all to look, so the rear check cannot be something you do when the forward view looks
-  ambiguous -- by the time the forward view tells you to look behind, whatever was there has
-  already decided the outcome.
-- Deliberation is free; the tick budget is not. Don't creep for no reason.
+  driving on a partial view costs far more than the tokens save. In particular, a vehicle closing on
+  you from behind, an emergency vehicle, or traffic you are about to pull in front of appears in
+  none of `CAM_FRONT`, the route or the ego sensors: nothing gives you a cue to look, so the rear
+  check has to be unconditional rather than something you do when the forward view looks ambiguous.
+- `render_bev` is worth a call when the geometry is unclear (privileged).
+- Deliberation is free; the tick budget is not. Don't creep for no reason. On an empty straight
+  road take *longer bursts* rather than fewer looks — with `percept=true` the look is already in
+  the reply, so the thing to economise is ticks per decision, never decisions per route.
 - On route end the advance returns reason `route_end`; `result.json` holds the official scores.
 
-## 10. Artifacts
+## 11. Artifacts
 
 `SESSION_DIR/`: `result.json`, `session.json` (access, seed, commit), `commands.jsonl` (every command
 with wall time), `decisions.jsonl` / `decisions.txt` (your driving commands, justifications and
