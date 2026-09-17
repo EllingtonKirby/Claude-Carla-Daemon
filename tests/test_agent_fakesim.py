@@ -239,7 +239,10 @@ def make_session(tmp_path, monkeypatch):
     saved = {k: sys.modules.get(k) for k in _STUBBED}
     opened = []
 
-    def _make(access):
+    def _make(access, gnss_noise=0.0, **cfg_overrides):
+        """``gnss_noise`` (m, per axis, seeded) makes the fake GNSS behave like the leaderboard's,
+        which is the only way to tell the position filters apart: with a clean fix they all return
+        the truth. ``cfg_overrides`` sets top-level config keys."""
         hero = Actor(1, "vehicle.lincoln.mkz", 0.0, 0.0, 90.0)  # heading world +y
         lead = Actor(2, "vehicle.audi.tt", -5.0, 20.0, 90.0)     # 20 m ahead, 5 m to the ego's RIGHT
         world = World(hero, [lead])
@@ -275,6 +278,7 @@ def make_session(tmp_path, monkeypatch):
         cfg = yaml.safe_load((REPO / "carla_probe" / "config.yaml").read_text())
         cfg["output_dir"] = str(tmp_path)
         cfg["access"] = access
+        cfg.update(cfg_overrides)
         for cam in cfg["cameras"]:
             cam["width"], cam["height"] = 64, 32
         cfg_path = tmp_path / "config.yaml"
@@ -299,10 +303,15 @@ def make_session(tmp_path, monkeypatch):
 
         def sim():
             t = 0.0
+            rng = np.random.default_rng(0)
             try:
                 for i in range(5000):
                     scenario.fire(i)
-                    lat, lon = geo.world_to_gps(hero.tf.location.x, hero.tf.location.y, *GEO_REF)
+                    gx, gy = hero.tf.location.x, hero.tf.location.y
+                    if gnss_noise:
+                        gx += rng.normal(0.0, gnss_noise)
+                        gy += rng.normal(0.0, gnss_noise)
+                    lat, lon = geo.world_to_gps(gx, gy, *GEO_REF)
                     compass = math.radians(hero.tf.rotation.yaw + 90.0) % (2 * math.pi)
                     inputs = {"SPEED": (0, {"speed": hero.speed}), "GPS": (0, [lat, lon, 0.0]),
                               "IMU": (0, [0.0, 0.0, 9.81, 0.0, 0.0, 0.0, compass])}
@@ -558,3 +567,73 @@ def test_sensors_session(make_session):
     events = [json.loads(line) for line in (s.out / "score_events.jsonl").read_text().splitlines()]
     assert [(e["type"], e["step"]) for e in events] == [("collisions_vehicle", step + 1)]
     assert "why: test: apply_plan" in (s.out / "decisions.txt").read_text()
+
+
+# --------------------------------------------------------------- position filters and plan tracking
+# The leaderboard noises the GNSS but not the compass or the speedometer (agent_wrapper.py sets
+# noise_lat/lon/alt on the GNSS, accel/gyro on the IMU, and CARLA has no compass noise attribute at
+# all). Everything below exists because of that asymmetry, so every test here runs with a noisy fix.
+GNSS_SD = 0.56   # m per axis per sample, the leaderboard's 5e-6 deg at this latitude
+
+
+def _traj(s, since):
+    """Trajectory rows this session appended. The fixture reuses one tmp_path and the daemon opens
+    trajectory.jsonl in APPEND mode, so two sessions in one test share the file -- read the whole
+    thing and you are scoring the previous variant as well as this one."""
+    rows = [json.loads(l) for l in (s.out / "trajectory.jsonl").read_text().splitlines() if l.strip()]
+    return rows[since:]
+
+
+def _traj_len(s):
+    f = s.out / "trajectory.jsonl"
+    return len(f.read_text().splitlines()) if f.exists() else 0
+
+
+def _drive_straight(s, plans=14, ticks=20):
+    """Drive the fake route, sampling the believed pose against the truth at each re-plan."""
+    errs = []
+    for _ in range(plans):
+        s.c.call("apply_plan", waypoints=[[5, 0], [10, 0], [20, 0], [40, 0]], ticks=ticks, target_speed=6.0)
+        est = s.c.call("get_state")["state"]["pose_estimate"]
+        errs.append(math.hypot(est["x"] - s.hero.tf.location.x, est["y"] - s.hero.tf.location.y))
+    return errs[len(errs) // 2:]   # drop the warm-up: every filter starts at the raw fix
+
+
+def test_dead_reckoning_filters_beat_the_blend(make_session):
+    """dr_offset / dr_trend exist to stop discarding old fixes, so they must localise better than
+    the complementary filter on the same three sensors. Relative, not absolute: the fake bicycle is
+    not CARLA, but the ordering is the whole point of the change."""
+    rms = {}
+    for mode in ("blend", "dr_offset", "dr_trend"):
+        s = make_session("sensors", gnss_noise=GNSS_SD, gnss_filter=mode)
+        e = _drive_straight(s)
+        rms[mode] = math.sqrt(sum(v * v for v in e) / len(e))
+    assert rms["dr_offset"] < 0.6 * rms["blend"], rms
+    assert rms["dr_trend"] < rms["blend"], rms
+
+
+def test_dead_reckon_plan_tracking_steadies_the_steering(make_session):
+    """plan_tracking: dead_reckon keeps GNSS noise out of the tracking transform, so the steer
+    command must stop chattering. Measured the way the wheel is felt: mean |change| per tick."""
+    def chatter(**over):
+        s = make_session("sensors", gnss_noise=GNSS_SD, **over)
+        n0 = _traj_len(s)
+        _drive_straight(s, plans=10)
+        st = [r["steer"] for r in _traj(s, n0) if r.get("speed", 0) > 1.0]
+        return sum(abs(b - a) for a, b in zip(st, st[1:])) / max(len(st) - 1, 1)
+
+    assert chatter(plan_tracking="dead_reckon") < 0.5 * chatter(plan_tracking="gnss")
+
+
+def test_plan_tracking_is_ignored_under_privileged(make_session):
+    """The privileged pose is ground truth, so the world round trip is already exact and dead
+    reckoning could only add error. The knob must be inert there -- identical steering, tick for
+    tick, not merely similar."""
+    def steers(tracking):
+        s = make_session("privileged", plan_tracking=tracking)
+        n0 = _traj_len(s)
+        for _ in range(6):
+            s.c.call("apply_plan", waypoints=[[5, 0], [10, 1], [20, 2], [40, 2]], ticks=20, target_speed=6.0)
+        return [r["steer"] for r in _traj(s, n0)]
+
+    assert steers("dead_reckon") == steers("gnss")

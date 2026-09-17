@@ -90,6 +90,8 @@ class PIDController:
         self.speed_offset = float(cfg["speed_offset"])
         self.curvature_gain = float(cfg["curvature_gain"])
         self.brake_zero_steer = bool(cfg["brake_zero_steer"])
+        self.steer_rate_limit = float(cfg["steer_rate_limit"])
+        self._last_steer: Optional[float] = None
         self.long_mode = str(cfg["long_mode"]).strip().lower()
         assert self.long_mode in _LONG_MODES, f"long_mode must be one of {_LONG_MODES}"
 
@@ -120,10 +122,22 @@ class PIDController:
         if self.brake_zero_steer and (brake or speed < 0.01):
             angle = 0.0
         steer = float(np.clip(self.turn.step(angle), -1.0, 1.0))
+        steer = self._rate_limit(steer)
 
         meta = {"desired_speed": desired, "aim_fwd": float(aim[0]), "aim_left": float(aim[1]),
                 "angle": angle, "lookahead": self._lookahead(wps, speed), "delta": delta}
         return steer, throttle, float(brake), meta
+
+    def _rate_limit(self, steer: float) -> float:
+        """Cap how far the steer command may move in one tick. This treats the symptom rather than
+        the cause -- it cannot tell controller chatter from a genuine swerve, and it delays every
+        real correction by the same amount -- so leave it off (>= 1.0, the full range in one tick)
+        unless a measurement says the loop is still chattering with its noise source fixed."""
+        if self.steer_rate_limit < 1.0 and self._last_steer is not None:
+            steer = float(np.clip(steer, self._last_steer - self.steer_rate_limit,
+                                  self._last_steer + self.steer_rate_limit))
+        self._last_steer = steer
+        return steer
 
     # ------------------------------------------------------------------ lateral
     def _lookahead(self, wps: np.ndarray, speed: float) -> float:

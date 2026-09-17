@@ -56,9 +56,24 @@ The ego pose is estimated:
 - **Geo reference.** The town's reference is solved from the plan's first point, which the
   leaderboard provides in both GPS and world form (`geometry.solve_geo_reference`).
 - **Position.** GNSS fixes are mapped to world coordinates with the inverse of CARLA's GNSS
-  projection, then smoothed by a dead-reckoning complementary filter (`gnss_position_gain`).
+  projection, then filtered (`gnss_filter`). `blend` is the dead-reckoning complementary filter
+  (`gnss_position_gain`); its steady-state error has a floor of `sigma*sqrt(gain/(2-gain))`, ~19 cm
+  at gain 0.2, because each tick discards the previous fix. `dr_offset` and `dr_trend` instead
+  dead-reckon the path and use GNSS only for its offset, fitted over `gnss_offset_window_s` — a
+  constant for `dr_offset`, a line for `dr_trend`. That works because of an asymmetry in what the
+  leaderboard noises: GNSS and the IMU's accelerometer and gyroscope, but not the compass (CARLA has
+  no such attribute) and not the speedometer. So dead reckoning already has the path's shape and
+  GNSS supplies two numbers for the run rather than two per tick, dropping the error as `1/sqrt(N)`.
+  The window is finite because the speedometer reports the FORWARD speed, so a slip angle makes the
+  dead-reckoned path slide sideways at `v*sin(beta)`; `dr_offset` lags that drift by about
+  `rate*window/2` and `dr_trend` removes it at twice the noise.
 - **Heading.** Comes from the IMU compass.
 - **Route.** Projected through the same conversion, so route and ego share one frame.
+- **Plan tracking** (`plan_tracking`). An active plan is stored in world and re-projected each tick.
+  Under `gnss` both ends of that round trip are estimates, so estimator wander between the re-plan
+  and now reaches the controller as tracked lateral error, and the loop steers it into the road.
+  `dead_reckon` carries the anchor forward on the speedometer and compass alone, with GNSS still
+  fixing it at every re-plan. Ignored under privileged, where the round trip is already exact.
 
 The hero actor is never queried, the collision sensor is never attached, and the live score is
 never computed for a reply. `render_bev` draws only route, route points, plan and a nominal ego box.

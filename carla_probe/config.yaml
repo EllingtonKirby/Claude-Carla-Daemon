@@ -41,8 +41,38 @@ collision_sensor: true
 
 # Sensors access: complementary filter on the GNSS position (noise ~0.5 m per sample). Each tick the
 # estimate is dead-reckoned with speed + compass, then pulled toward the GNSS fix by this gain.
-# 1.0 = raw GNSS.
+# 1.0 = raw GNSS. Read ONLY by `gnss_filter: blend` below; the dr_* filters ignore it.
 gnss_position_gain: 0.2
+
+# Sensors access: how the GNSS fix and the dead reckoning are combined.
+#   blend      the complementary filter above. Its steady-state position error has a floor of
+#              sigma*sqrt(gain/(2-gain)) -- ~19 cm at gain 0.2 -- no matter how long it runs.
+#   dr_offset  dead-reckon the path and use GNSS only for its constant OFFSET, fitted over
+#              gnss_offset_window_s. The compass and speedometer carry no leaderboard noise, so the
+#              path's shape is already right and GNSS has two numbers to supply rather than two per
+#              tick; the error falls as 1/sqrt(N) instead (~6 cm over a 5 s window). Uses exactly
+#              the same three sensors -- it just stops throwing the older fixes away.
+#   dr_trend   the same, fitting a LINE rather than a constant and reading it at the current sample.
+#              The speedometer reports the FORWARD speed, so dead reckoning is exact along track but
+#              slides sideways at v*sin(slip) through a turn; a constant fit lags that by about
+#              rate*window/2, a line fit removes it. Costs 2x the noise of dr_offset at equal window.
+gnss_filter: blend
+# dr_offset / dr_trend: how far back the fit reaches. Longer = less GNSS noise, but more room for
+# dead-reckoning drift -- which dr_offset lags and dr_trend corrects.
+gnss_offset_window_s: 5.0
+
+# Sensors access: how an ACTIVE plan is tracked between re-plans. Tracking means converting the
+# driver's ego-frame waypoints to world with the pose believed when the plan was issued, then back
+# to the ego frame with the pose believed now.
+#   gnss         both of those are GNSS-blended estimates, so the estimator's wander between the
+#                two instants arrives at the controller as tracked lateral error -- and since the
+#                loop closes on the estimate, the car steers that wander into the road
+#   dead_reckon  carry the anchor forward with the speedometer and the compass, neither of which the
+#                leaderboard adds noise to, so no GNSS noise reaches the controller within a plan.
+#                GNSS still fixes the anchor at every re-plan, so this cannot drift; it uses
+#                strictly less than `gnss`, not more.
+# Ignored under privileged access: there the pose is ground truth and the round trip is exact.
+plan_tracking: gnss
 
 # Driving commands (apply_plan, set_control, hold, tick, run_until_*, shutdown) must carry why="..."
 # (what the driver observed and why this command follows). Accepted ones are logged with their outcome
@@ -86,6 +116,10 @@ pid:
   speed_offset: 1.9152884533402488
   curvature_gain: 3.5        # lead only: look up to +2 m farther through bends; 0 = off
   brake_zero_steer: false    # hold steering error at 0 while braking, so the turn integral drains
+  # Cap on how far steer may move in one tick (20 Hz). >= 1.0 = off (the full range in one tick).
+  # Symptom-level: it cannot tell controller chatter from a genuine swerve, and it delays every real
+  # correction equally -- prefer fixing the noise that is driving the chatter (see plan_tracking).
+  steer_rate_limit: 1.0
 
   # Longitudinal. `pid` is the speed PID above; `lead` is an expert-tuned regression map with no
   # integral state, so launches are crisp and a ~zero target is a hard stop.

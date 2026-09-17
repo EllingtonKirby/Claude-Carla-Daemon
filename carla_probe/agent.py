@@ -138,6 +138,9 @@ def _resolve_config_path(raw: str) -> str:
     raise FileNotFoundError(f"probe config not found in --agent-config {raw!r}")
 
 
+_TICK_S = 0.05   # the leaderboard's fixed simulation step
+
+
 class ProbeAgent(autonomous_agent.AutonomousAgent):
     # ------------------------------------------------------------------ lifecycle
     def setup(self, path_to_conf_file: str) -> None:
@@ -159,6 +162,20 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         # The collision sensor is not a Bench2Drive-eligible sensor: never attached in sensors access.
         self._want_collision_sensor = bool(cfg["collision_sensor"]) and not self._sensors_only
         self._gnss_gain = float(cfg["gnss_position_gain"])
+        self._gnss_filter = str(cfg["gnss_filter"]).strip().lower()
+        assert self._gnss_filter in ("blend", "dr_offset", "dr_trend"), \
+            f"gnss_filter must be 'blend', 'dr_offset' or 'dr_trend', got {self._gnss_filter!r}"
+        # Window in SAMPLES. The leaderboard runs a fixed 20 Hz, which is also what the sensor
+        # specs below assume (`sensor_tick: 0.05`); a short window is harmless if that ever changes,
+        # since the fit only needs the samples to be evenly spaced, not to be 50 ms apart.
+        self._gnss_window = deque(maxlen=max(1, int(float(cfg["gnss_offset_window_s"]) / _TICK_S)))
+        self._dr_xy: Optional[Tuple[float, float]] = None
+        # How an active plan is tracked between re-plans (sensors access only; under privileged the
+        # pose is ground truth, so re-projecting through it is exact and the knob is ignored).
+        self._plan_tracking = str(cfg["plan_tracking"]).strip().lower()
+        assert self._plan_tracking in ("gnss", "dead_reckon"), \
+            f"plan_tracking must be 'gnss' or 'dead_reckon', got {self._plan_tracking!r}"
+        self._dead_reckon_plan = self._plan_tracking == "dead_reckon" and self._sensors_only
         self._plan_interval_s = float(cfg["plan_interval_s"])
         self._bev = {k: cfg["bev"][k] for k in ("forward_m", "back_m", "side_m", "px_per_m", "draw_lanes",
                                                 "lane_step_m", "lane_max_nodes")}
@@ -189,6 +206,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._last_input: Optional[dict] = None
         self._mode = "hold"
         self._plan_world: Optional[np.ndarray] = None
+        # dead_reckon: the pose the plan is tracked from, seeded from the believed pose at the
+        # re-plan and carried by speed + compass alone. None whenever `gnss` tracking is in use.
+        self._track_pose: Optional[Dict[str, float]] = None
         self._plan_speed: Optional[float] = None
         self._plan_done = False
         self._raw = {"steer": 0.0, "throttle": 0.0, "brake": 1.0}
@@ -324,6 +344,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             tf = self.hero_actor.get_transform()
             self._ego = {"x": float(tf.location.x), "y": float(tf.location.y), "yaw": float(tf.rotation.yaw), "speed": speed}
             self._ensure_collision_sensor()
+        self._advance_track_pose(speed)
         self._last_t = self._sim_time
         self._update_route_progress()
         self._stopped_run = self._stopped_run + 1 if speed < self._stopped_speed else 0
@@ -367,9 +388,71 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         prev = self._ego
         yaw = prev["yaw"] if (math.isnan(compass) and prev) else geo.compass_to_yaw_deg(0.0 if math.isnan(compass) else compass)
         dt = 0.0 if self._last_t is None else self._sim_time - self._last_t
-        x, y = geo.predict_blend(None if prev is None else (prev["x"], prev["y"]),
-                                 speed, yaw, dt, meas, self._gnss_gain)
+        if self._gnss_filter in ("dr_offset", "dr_trend"):
+            x, y = self._dr_anchor_estimate(meas, speed, yaw, dt)
+        else:
+            x, y = geo.predict_blend(None if prev is None else (prev["x"], prev["y"]),
+                                     speed, yaw, dt, meas, self._gnss_gain)
         return {"x": x, "y": y, "yaw": yaw, "speed": speed}
+
+    def _dr_anchor_estimate(self, meas: Tuple[float, float], speed: float, yaw: float,
+                            dt: float) -> Tuple[float, float]:
+        """Dead-reckon the path, and use GNSS only for the one thing dead reckoning cannot supply.
+
+        The leaderboard adds noise to the GNSS but not to the compass or the speedometer, so
+        integrating those two reproduces the true path's SHAPE essentially exactly. All GNSS has to
+        supply is where that shape sits -- two numbers for the whole run, not two numbers every
+        tick. Fitting that offset over a window therefore drives the position error down as
+        1/sqrt(N), instead of the complementary filter's sqrt(gain/(2-gain)) floor: at 20 Hz a 5 s
+        window is 100 samples, so ~0.56 m per-sample noise becomes ~6 cm.
+
+        Dead reckoning is not drift-free, though, which is what the two modes differ over. The
+        speedometer reports the FORWARD component of the velocity, so along-track integration is
+        exact; what it cannot see is the sideways component, and in a turn with a slip angle the
+        dead-reckoned path slides laterally at v*sin(beta).
+
+          dr_offset  fit a constant over the window. Cheapest, lowest noise (sigma/sqrt(N)) -- but a
+                     steady drift is only ever half-corrected, leaving a lag of about rate*window/2.
+          dr_trend   fit a line and read it at the current sample, so a steady drift is removed
+                     rather than lagged. The endpoint of a line fit costs 2x the noise of its mean,
+                     which a longer window pays back.
+        """
+        if self._dr_xy is None:
+            self._dr_xy = (0.0, 0.0)
+        else:
+            r = math.radians(yaw)
+            self._dr_xy = (self._dr_xy[0] + speed * dt * math.cos(r),
+                           self._dr_xy[1] + speed * dt * math.sin(r))
+        self._gnss_window.append((meas[0] - self._dr_xy[0], meas[1] - self._dr_xy[1]))
+        res = np.asarray(self._gnss_window, dtype=np.float64)   # (n, 2) GNSS minus dead reckoning
+        n = len(res)
+        if self._gnss_filter == "dr_trend" and n >= 4:
+            tc = np.arange(n, dtype=np.float64)
+            tc -= tc.mean()
+            off = res.mean(axis=0) + (tc @ res) / float(tc @ tc) * tc[-1]
+        else:
+            off = res.mean(axis=0)
+        return self._dr_xy[0] + float(off[0]), self._dr_xy[1] + float(off[1])
+
+    def _advance_track_pose(self, speed: float) -> None:
+        """Carry the plan-tracking pose forward by one tick (``plan_tracking: dead_reckon``).
+
+        Tracking a plan means converting the driver's ego-frame waypoints to world with the pose
+        believed when the plan was issued, then back to the ego frame with the pose believed now.
+        Under `gnss` both poses are GNSS-blended estimates, so the estimator's wander between those
+        two instants lands in the controller as tracked lateral error -- and because the loop closes
+        on the estimate, the car steers that wander into the road. Dead reckoning carries the anchor
+        forward with the speedometer and the compass instead, neither of which the leaderboard adds
+        noise to, so nothing GNSS-borne reaches the controller within a plan. GNSS still fixes the
+        anchor at every re-plan, so this cannot drift: it is strictly less information, not more.
+        """
+        if self._track_pose is None or self._ego is None:
+            return
+        dt = 0.0 if self._last_t is None else self._sim_time - self._last_t
+        yaw = math.radians(self._ego["yaw"])
+        self._track_pose = {"x": self._track_pose["x"] + speed * dt * math.cos(yaw),
+                            "y": self._track_pose["y"] + speed * dt * math.sin(yaw),
+                            "yaw": self._ego["yaw"]}
 
     # ------------------------------------------------------------------ advancing
     def _start_advance(self, kind: str, cmd: Dict[str, Any], **extra: Any) -> None:
@@ -492,6 +575,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             e = self._ego
             assert e is not None
             self._plan_world = geo.ego_to_world((e["x"], e["y"]), e["yaw"], wps)
+            self._track_pose = {"x": e["x"], "y": e["y"], "yaw": e["yaw"]} if self._dead_reckon_plan else None
             ts = cmd.get("target_speed")
             self._plan_speed = None if ts is None else float(ts)
             self._plan_done = False
@@ -507,6 +591,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             return None
         if name == "hold":
             self._mode, self._plan_world, self._plan_speed = "hold", None, None
+            self._track_pose = None
             if cmd.get("ticks"):
                 self._start_advance("ticks", cmd, n=int(cmd["ticks"]))
                 return None
@@ -534,7 +619,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             control.brake = 1.0
             return control
 
-        plan_ego = geo.world_to_ego((e["x"], e["y"]), e["yaw"], self._plan_world)
+        p = self._track_pose or e
+        plan_ego = geo.world_to_ego((p["x"], p["y"]), p["yaw"], self._plan_world)
         last = plan_ego[-1]
         if last[0] < 0.0 or float(np.hypot(last[0], last[1])) < 1.5:
             self._plan_done = True
