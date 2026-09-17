@@ -14,3 +14,5 @@ __pycache__/
 # fetched into the vendored Fail2Drive tree by scripts/setup_fail2drive.sh (75 MB, see
 # third_party/fail2drive/VENDORED.md); srunner reads them at runtime
 /third_party/fail2drive/scenario_runner/speed_limits/*.npy
+# scratch: local analysis notes and throwaway scripts, never part of a run
+/tmp/
