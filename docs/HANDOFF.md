@@ -3,7 +3,9 @@
 This is the one document to read before operating this repo. It covers what the repo is for (§1),
 setup (§2), validating an install (§3), running an eval (§4), what a run records and how to
 analyze it (§5), and troubleshooting (§6). Deeper references: `docs/OPERATOR_GUIDE.md` (the
-driver's manual), `docs/DESIGN.md` (internals) and `benchmark/PROTOCOL.md` (benchmark rules).
+driver's manual), `docs/DESIGN.md` (internals), `benchmark/PROTOCOL.md` (benchmark rules) and
+`docs/JOURNAL.md` (what we have measured so far, and the measurement lessons from it — read §1
+before designing an experiment, and add to it after running one).
 
 **Two roles.** The *operator* (you, reading this) sets up machines, launches runs and collects
 results. The *driver* is the LLM agent being evaluated. A driver under evaluation gets only the
@@ -211,7 +213,9 @@ daemon answers -- much longer than Town03. Raise `--wait` rather than assuming a
 - The driver uses only the probe protocol: no route XMLs, scenario or simulator code, logs, config
   edits or human hints. On the sensors track it may open only files whose paths the daemon returns.
 - Traffic is seeded but not bit-exact, and it reacts to the ego: run several attempts per route
-  when comparing models.
+  when comparing models. Measured on the sensors dev set, the median per-route spread over three
+  attempts at one commit is **27 DS points**, so a one-attempt-each-way per-route delta is not a
+  result — `docs/JOURNAL.md` §1.1 has the numbers and what they imply for experiment design.
 
 ### 4.2 Procedure: `scripts/run_eval.sh`
 
@@ -334,7 +338,16 @@ are in command order.
   transcript's final `result` row (assistant messages repeat their usage as a turn streams, so
   summing those over-counts 3-5x). It warns if its price table drifts more than 1% from what a run
   itself reported. Dollars are API-equivalent, not a bill — see §4.1.
-- `python tools/make_video.py SESSION_DIR`: mp4 from `camera_log/`.
+- `python tools/plan_lint.py SESSION_DIR...`: per-plan geometry over every `apply_plan` a session
+  sent, judged against that session's own config snapshot — waypoint spacing, reach, where the
+  controller's aim point lands, tracking error, and flags for the failure shapes. Hundreds of
+  samples per corpus where `result.json` gives one, so this is the instrument to compare guide or
+  config changes with (`docs/JOURNAL.md` §1.2).
+- `python tools/percept_video.py SESSION_DIR...`: mp4 from `frames/`, one panel per decision — the
+  three forward cameras and the back camera as the driver saw them. Panels are decisions, not even
+  intervals of sim time.
+- `python tools/make_video.py SESSION_DIR`: mp4 from `camera_log/` (needs `RECORD_CAMERA_EVERY`;
+  an ordinary run records no `camera_log/`, so use `percept_video.py` for those).
 - Videos (`--video`, `make_video.py`) are H.264 (`yuv420p`) encoded by ffmpeg, so they play in browsers and
   common players. Replays run at real time (10 fps with `--every 2`).
 
