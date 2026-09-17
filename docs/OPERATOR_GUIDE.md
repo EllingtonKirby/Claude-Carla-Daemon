@@ -95,10 +95,12 @@ reviewed against the scene after the run. Write the reason you actually acted on
 - **Speed.** With `target_speed` (m/s) the controller holds that speed along the path. Without it,
   waypoints are `plan_interval_s` (0.5 s) apart, so spacing encodes speed (3 m apart ≈ 6 m/s).
   `target_speed=0` brakes to a stop.
-- **Geometry.** Use 5–8 points reaching 15–40 m ahead; the steering aims about 12 m out
-  (`pid.aim_dist`). Hand-drawn curves drift through sharp turns, so anchor waypoints to something
-  real: the lane (privileged `lane.*`, or the lane markings you see on camera) and
-  `nav.route_points_ego`.
+- **Geometry.** Use 5–8 points reaching 15–40 m ahead. The steering aims at a point interpolated
+  along the plan whose distance grows with speed (about 2.5 m at a crawl, up to 10.5 m above
+  ~9 m/s), so the first few metres of the plan are what steer you through a slow junction and the
+  far end is what steers you on open road. Hand-drawn curves drift through sharp turns, so anchor
+  waypoints to something real: the lane (privileged `lane.*`, or the lane markings you see on
+  camera) and `nav.route_points_ego`.
 - **When the plan is consumed** (its endpoint is no longer ahead), `plan_done` becomes true and
   the ego brakes. Issue the next plan before that point to keep moving.
 - **Burst length.** Use 20–40 ticks (1–2 s) on open road and 5–15 near interactions. Re-observe
