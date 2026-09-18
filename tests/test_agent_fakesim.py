@@ -56,8 +56,10 @@ class TF:
 
 
 class BB:
-    def __init__(self, ex, ey):
-        self.extent, self.location = V(ex, ey, 0.8), V()
+    def __init__(self, ex, ey, lx=0.0):
+        # `location` is the box centre relative to the ACTOR origin, and it is not zero on a real
+        # vehicle -- which is why config's ego: splits front_m from rear_m instead of a half-length.
+        self.extent, self.location = V(ex, ey, 0.8), V(lx, 0.0, 0.0)
 
     def get_world_vertices(self, tf):
         c, s = math.cos(math.radians(tf.rotation.yaw)), math.sin(math.radians(tf.rotation.yaw))
@@ -70,11 +72,11 @@ class BB:
 
 
 class Actor:
-    def __init__(self, aid, type_id, x, y, yaw, ex=2.3, ey=1.0):
+    def __init__(self, aid, type_id, x, y, yaw, ex=2.3, ey=1.0, lx=0.0):
         self.id, self.type_id = aid, type_id
         self.tf = TF(V(x, y), Rot(yaw))
         self.vel = V()
-        self.bounding_box = BB(ex, ey)
+        self.bounding_box = BB(ex, ey, lx)
         self.speed = 0.0
 
     def get_transform(self):
@@ -239,11 +241,16 @@ def make_session(tmp_path, monkeypatch):
     saved = {k: sys.modules.get(k) for k in _STUBBED}
     opened = []
 
-    def _make(access, gnss_noise=0.0, **cfg_overrides):
+    def _make(access, gnss_noise=0.0, hero_extent=None, **cfg_overrides):
         """``gnss_noise`` (m, per axis, seeded) makes the fake GNSS behave like the leaderboard's,
         which is the only way to tell the position filters apart: with a clean fix they all return
-        the truth. ``cfg_overrides`` sets top-level config keys."""
-        hero = Actor(1, "vehicle.lincoln.mkz", 0.0, 0.0, 90.0)  # heading world +y
+        the truth. ``cfg_overrides`` sets top-level config keys. ``hero_extent`` is
+        ``(extent_x, extent_y, bbox_offset_x)`` for the ego's bounding box, for the footprint check.
+        """
+        # The real Bench2Drive hero, measured off the blueprint: a Lincoln MKZ 2020. Using its
+        # actual box means config's `ego:` is exercised against the vehicle it claims to describe.
+        ex, ey, lx = hero_extent or (2.4462, 0.9184, -0.0063)
+        hero = Actor(1, "vehicle.lincoln.mkz", 0.0, 0.0, 90.0, ex=ex, ey=ey, lx=lx)  # heading world +y
         lead = Actor(2, "vehicle.audi.tt", -5.0, 20.0, 90.0)     # 20 m ahead, 5 m to the ego's RIGHT
         world = World(hero, [lead])
         # Like CARLA 0.9.15, get_level_bbs also returns SPAWNED actors: the ego's own box, and a
@@ -402,7 +409,9 @@ def test_privileged_session(make_session):
     assert r["status"]["route"]["progress_pct"] > 0.0
     assert s.world.spawned == 1  # the collision sensor
 
-    assert Path(c.call("render_bev")["file"]).is_file()
+    _bev = c.call("render_bev")
+    assert "file" in _bev, _bev
+    assert Path(_bev["file"]).is_file()
     dump = c.call("dump_frame")["dump"]
     assert Path(dump["state"]).is_file() and Path(dump["bev"]).is_file() and len(dump["cameras"]) == 4
     # percept is the ONLY view: observe and get_camera are gone, so there is one way to see.
@@ -534,6 +543,36 @@ def test_sensors_session(make_session):
         assert resp["status"]["mode"] == "hold" and resp["status"]["step"] == 0
     assert "event=collision" not in str(c.call("help")["advance_events"])
 
+    # The ego is told how big it is. Not world state -- it is the car it is driving -- so it is
+    # reported at both levels, and it is the thing whose absence made every distance ambiguous.
+    body = state["ego_body"]
+    assert (body["front_m"], body["rear_m"], body["half_width_m"]) == (2.44, 2.45, 0.92)
+    assert body["corners_ego"] == [[2.44, 0.92], [2.44, -0.92], [-2.45, -0.92], [-2.45, 0.92]]
+    assert [cam["id"] for cam in body["cameras"]] == [
+        "CAM_FRONT", "CAM_FRONT_LEFT", "CAM_FRONT_RIGHT", "CAM_BACK"]
+    assert body["cameras"][0] == {"id": "CAM_FRONT", "x": 0.8, "y": 0.0, "yaw_deg": 0.0, "fov_deg": 100}
+    assert "ORIGIN" in obs["legend"] and "2.44" in obs["legend"]
+
+    # clearance is from the BODYWORK. A point 3 m from the origin is 0.56 m from the bumper, and
+    # spending the 3 m is how the driver hit things it had correctly located.
+    cl = c.call("clearance", points=[[3.0, 0.0], [0.0, 1.0], [0.0, 0.0]])["clearance"]
+    assert [pt["now_m"] for pt in cl["points"]] == [pytest.approx(0.56), pytest.approx(0.08),
+                                                    pytest.approx(-0.92)]
+    assert cl["plan"] is None and "along_plan" not in cl["points"][0]
+    assert not [k for k in _keys(cl) if any(k.startswith(w) for w in _PRIVILEGED_WORDS)]
+
+    # ...and over a path, which is what catches a corner swinging into something already passed.
+    swept = c.call("clearance", points=[[3.5, -1.4]], waypoints=[[4.0, 0.0], [8.0, 4.0]])["clearance"]
+    assert swept["plan"] == "given"
+    assert swept["points"][0]["now_m"] == pytest.approx(1.16, abs=0.02)      # clear right now
+    assert swept["points"][0]["along_plan"]["min_m"] == pytest.approx(-0.28, abs=0.05)  # not after
+    assert swept["swept"]["corridor_width_m"] > 2 * body["half_width_m"]
+
+    # Asking while looking costs no extra round trip, and must not widen what percept returns.
+    with_points = c.call("percept", points=[[3.0, 0.0]])
+    assert with_points["clearance"]["points"][0]["now_m"] == pytest.approx(0.56)
+    assert not [k for k in _keys(with_points) if any(k.startswith(w) for w in _PRIVILEGED_WORDS)]
+
     # percept composes the same access-correct builders, so it must leak nothing either -- checked
     # at both entry points, standalone and attached to a driving command.
     standalone = c.call("percept")
@@ -551,7 +590,9 @@ def test_sensors_session(make_session):
     est = c.call("get_state")["state"]["pose_estimate"]
     assert (est["x"], est["y"]) == (pytest.approx(hero.tf.location.x, abs=0.2), pytest.approx(hero.tf.location.y, abs=0.2))
 
-    assert Path(c.call("render_bev")["file"]).is_file()
+    _bev = c.call("render_bev")
+    assert "file" in _bev, _bev
+    assert Path(_bev["file"]).is_file()
     dump = c.call("dump_frame")["dump"]
     assert "ego_status" in Path(dump["state"]).read_text()
     assert c.call("run_until_event", event="plan_done", max_ticks=400)["result"]["reason"] == "plan_done"
@@ -637,3 +678,31 @@ def test_plan_tracking_is_ignored_under_privileged(make_session):
         return [r["steer"] for r in _traj(s, n0)]
 
     assert steers("dead_reckon") == steers("gnss")
+
+
+def test_the_footprint_is_checked_against_the_car_that_was_actually_spawned(make_session, capsys):
+    """The footprint is quoted to the driver and used for clearance arithmetic, so a stale config
+    is worse than none: it would be confidently wrong. Only a privileged session can read the real
+    bounding box; a sensors session inherits the guarantee because the same hero is spawned."""
+    s = make_session("privileged", hero_extent=(2.0, 1.4, 0.0))     # not the MKZ 2020
+    s.c.call("tick", n=1, why="settle")
+    assert "does not match the spawned" in capsys.readouterr().out
+    logged = [json.loads(l) for l in (s.out / "commands.jsonl").read_text().splitlines()
+              if '"ego_body_check"' in l]
+    assert logged and logged[-1]["off_m"]["half_width_m"] == pytest.approx(0.48)  # measured - config
+    # ...and it warns without changing what is reported: config stays the source of truth.
+    assert s.c.call("get_state")["state"]["ego_body"]["half_width_m"] == 0.92
+
+
+def test_the_real_vehicle_passes_the_footprint_check(make_session, capsys):
+    s = make_session("privileged")                                   # the measured MKZ 2020 box
+    s.c.call("tick", n=1, why="settle")
+    assert "does not match the spawned" not in capsys.readouterr().out
+
+
+def test_clearance_reads_the_plan_in_flight_when_none_is_given(make_session):
+    s = make_session("sensors")
+    s.c.call("apply_plan", waypoints=[[4.0, 0.0], [8.0, 4.0]], ticks=1, why="turn out")
+    cl = s.c.call("clearance", points=[[3.5, -1.4]])["clearance"]
+    assert cl["plan"] == "in_flight"
+    assert cl["points"][0]["along_plan"]["min_m"] < 0.0

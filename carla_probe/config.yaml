@@ -161,6 +161,21 @@ record:
   camera_id: CAM_FRONT        # camera logged to camera_log/ when frame recording is on
   camera_every_n_ticks: 0     # 0 = off at launch; toggle at runtime with `record on=true every=2`
 
+# The ego's own body, in metres from the ego ORIGIN -- the point every ego-frame quantity in a
+# reply is measured from. This is the car the driver is sitting in, not world state, so it is
+# reported at BOTH access levels; a driver that is not told it reads a distance off a camera and
+# spends the whole of it, which is what 22 of the first corpus's 49 collisions were.
+#
+# Measured, not assumed: Bench2Drive's hero is a Lincoln MKZ 2020 on every session recorded so far,
+# whose CARLA bounding box is extent (2.4462, 0.9184) at location x=-0.0063. Watch the width -- the
+# hardcoded 1.05 this replaced was the MKZ *2017*'s, 0.13 m per side too wide, and it had been
+# drawing the ego oversized in every sensors-only BEV. agent.py re-checks these against the real
+# bounding box on a privileged run and warns to the session log if they have drifted.
+ego:
+  front_m: 2.44
+  rear_m: 2.45
+  half_width_m: 0.92
+
 # RGB cameras. CARLA vehicle frame: x forward, y RIGHT, z up (m); yaw in degrees, + = to the right.
 # The leaderboard rejects mounts more than 3 m from the vehicle origin and more than 8 cameras.
 # Every camera renders every tick, so fewer / smaller cameras = a faster simulation.

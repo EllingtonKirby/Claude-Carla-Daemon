@@ -45,6 +45,12 @@ a route is tens of these cycles, not one:
    LEFT) from the route points and the lane — spaced 2–3 m apart, reaching about 10 m past where
    the burst will end, because the controller steers by a point only a few metres ahead and ignores
    everything past it (§7). Set `target_speed` to a safe speed, and 0 to stop.
+   - **You are not a point.** Every distance in a reply is to the ego origin; your body reaches
+     2.44 m ahead of it, 2.45 m behind and 0.92 m each side, so a car "3 m ahead" is 0.56 m from
+     your bumper. Before committing to any manoeuvre where something is within a few metres, pass
+     the positions you believe it is at: `percept points=[[fwd,left],...]`, or
+     `clearance points=[...] waypoints=[...]` to test a candidate path. Negative means you drive
+     through it. Guide §5.1.
 3. **Advance and look in one command.** `apply_plan ... ticks=<5-40> percept=true why="..."` returns
    the next look inside the reply that reports the outcome, so a decision costs one round trip and
    you are never planning from a stale picture. Short bursts near other road users, longer on empty

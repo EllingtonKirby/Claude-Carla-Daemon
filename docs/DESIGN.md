@@ -76,7 +76,22 @@ The ego pose is estimated:
   fixing it at every re-plan. Ignored under privileged, where the round trip is already exact.
 
 The hero actor is never queried, the collision sensor is never attached, and the live score is
-never computed for a reply. `render_bev` draws only route, route points, plan and a nominal ego box.
+never computed for a reply. `render_bev` draws only route, route points, plan and the ego box from
+`config.yaml`'s `ego:`.
+
+**The ego's own body is not world state (both tracks).** `ego:` in `config.yaml` gives the hero's
+extents from the ego origin, and they are reported identically at both access levels in
+`get_state` → `ego_body`, along with the camera mounts. A driver knows the size of the car it is
+driving; withholding it made every ego-frame distance ambiguous, because they are all measured from
+the origin while contact happens at the bodywork. The `clearance` command (and `points=` on
+`percept`) turns points the DRIVER supplies into body-relative clearances, now and swept along a
+path, using `geometry.point_clearance` / `sweep_clearance`. It reads nothing but those points and
+the config, so it tells a sensors session nothing it did not already believe — it only does the
+arithmetic correctly, and it must stay that way. In particular the privileged path deliberately
+does **not** snap the supplied points to real actors: the two levels would then answer differently
+and the number would stop being comparable across a benchmark. A privileged session re-checks
+`ego:` against `hero.bounding_box` on its first tick and warns to the session log if they have
+drifted; sensors sessions inherit that guarantee because the leaderboard spawns the same hero.
 
 **Write-only analysis logs (both tracks).** `score_events.jsonl` reads the scenario's criteria every
 tick in sensors sessions too (`_scenario_events` → `_record_score_events`). Its output goes only to

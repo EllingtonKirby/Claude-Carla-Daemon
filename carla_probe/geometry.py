@@ -17,7 +17,7 @@ frame, and the route is projected through the same GNSS conversion so both share
 from __future__ import annotations
 
 import math
-from typing import Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -64,6 +64,141 @@ def order_footprint(pts: np.ndarray) -> np.ndarray:
     c = corners.mean(axis=0)
     order = np.argsort(np.arctan2(corners[:, 1] - c[1], corners[:, 0] - c[0]))
     return corners[order]
+
+
+# --------------------------------------------------------------------------- the ego's own body
+#
+# Everything above treats the ego as a point at the origin, which is what the origin is for. The
+# driver is not a point: on the sensors track it was reading distances off camera images and
+# spending the whole of them, because nothing in the reply ever said how much of that distance its
+# own bodywork already occupies. Contact registers when two centres reach the sum of their
+# half-extents, so a "3 m gap" to another car is touching. These functions turn the body extents
+# into the numbers that answer the question actually being asked: does my car fit through there.
+#
+# NOTE ON FRAMES. These all work in the EGO frame (x forward, y LEFT), which is RIGHT-handed, not
+# in the CARLA world frame, which is left-handed. `world_to_ego` above must NOT be reused to place
+# a point in a swept body's frame: its sign convention would mirror left and right, and the result
+# would look entirely plausible.
+
+
+def footprint_corners(front_m: float, rear_m: float, half_width_m: float) -> np.ndarray:
+    """The four body corners in the ego frame, from the front-left, going clockwise seen from above.
+
+    ``front_m`` and ``rear_m`` are measured from the ego ORIGIN, which is not the middle of the car
+    on every vehicle, so they are given separately rather than as a half-length.
+    """
+    return np.array([[front_m, half_width_m], [front_m, -half_width_m],
+                     [-rear_m, -half_width_m], [-rear_m, half_width_m]], dtype=np.float64)
+
+
+def point_clearance(front_m: float, rear_m: float, half_width_m: float,
+                    pt_ego: Sequence[float]) -> float:
+    """Signed metres from the BODYWORK to a point in the ego frame.
+
+    Positive is free space between the body and the point, zero is touching, and negative means the
+    point is inside the footprint, its magnitude being how far in. This is the quantity a driver
+    means by "clearance"; the distance to the origin, which is what an image gives, is larger by
+    most of a car.
+    """
+    f, l = float(pt_ego[0]), float(pt_ego[1])
+    out_f = max(-rear_m - f, f - front_m, 0.0)
+    out_l = max(-half_width_m - l, l - half_width_m, 0.0)
+    if out_f or out_l:
+        return math.hypot(out_f, out_l)
+    return -min(f + rear_m, front_m - f, l + half_width_m, half_width_m - l)
+
+
+def _into_body(pose: Sequence[float], pt_ego: Sequence[float]) -> Tuple[float, float]:
+    """A point in the ego frame -> the frame of a body sitting at ``pose`` = (fwd, left, heading).
+
+    ``heading`` is degrees counter-clockwise (toward the ego's left), because that is what the
+    right-handed ego frame means by a positive rotation.
+    """
+    h = math.radians(pose[2])
+    c, s = math.cos(h), math.sin(h)
+    dx, dy = float(pt_ego[0]) - pose[0], float(pt_ego[1]) - pose[1]
+    return dx * c + dy * s, -dx * s + dy * c
+
+
+def path_poses(path_ego: np.ndarray, step_m: float = 0.25,
+               start_heading_deg: float = 0.0) -> np.ndarray:
+    """(fwd, left, heading_deg) the ego ORIGIN would hold while following a planned path.
+
+    The path is resampled every ``step_m`` and the heading is its tangent, except at the start,
+    where the body still has the heading it has now. The origin is prepended when the path does not
+    already begin there, because a plan's first waypoint is normally some metres ahead and the body
+    has to travel that bit too.
+
+    This is the sweep the plan ASKS for, not the one the controller will drive: it aims at a single
+    lookahead point and lags behind the path by a median of about 0.2 m on the first corpus
+    (``tools/plan_lint.py``'s ``track_rms``). Read a clearance from it as intent, not as a
+    prediction, and leave margin for the difference.
+    """
+    p = np.asarray(path_ego, dtype=np.float64).reshape(-1, 2)
+    if float(np.hypot(*p[0])) > 1e-6:
+        p = np.vstack([[0.0, 0.0], p])
+    s = cumulative_arclength(p)
+    if s[-1] <= 0.0:
+        return np.array([[0.0, 0.0, start_heading_deg]])
+    stations = np.arange(0.0, s[-1] + step_m, step_m)
+    stations[-1] = min(stations[-1], s[-1])
+    out = []
+    for station in stations:
+        xy = point_at_arclength(p, float(station))
+        seg = int(np.clip(np.searchsorted(s, station, side="right") - 1, 0, len(p) - 2))
+        d = p[seg + 1] - p[seg]
+        heading = start_heading_deg if station <= 0.0 else math.degrees(math.atan2(d[1], d[0]))
+        out.append([xy[0], xy[1], heading])
+    return np.array(out, dtype=np.float64)
+
+
+def sweep_clearance(front_m: float, rear_m: float, half_width_m: float, path_ego: np.ndarray,
+                    pt_ego: Sequence[float], step_m: float = 0.25,
+                    start_heading_deg: float = 0.0) -> Dict[str, float]:
+    """The closest the body comes to a point over a whole planned sweep.
+
+    Sweeping the rectangle rather than testing the endpoint is what catches a rear corner swinging
+    into something the nose has already passed -- the shape of several real contacts, where the
+    driver correctly judged that it was "past" an object and then hit it with the back of the car.
+
+    ``at_station_m`` is where the minimum is FIRST reached. A flank passing a point holds the same
+    clearance for the length of the car, so the minimum is usually a tie across an interval and
+    the station marks the start of the pass, not its middle.
+    """
+    poses = path_poses(path_ego, step_m=step_m, start_heading_deg=start_heading_deg)
+    best, best_i = float("inf"), 0
+    for i, pose in enumerate(poses):
+        c = point_clearance(front_m, rear_m, half_width_m, _into_body(pose, pt_ego))
+        if c < best:
+            best, best_i = c, i
+    at = poses[best_i]
+    return {"min_m": best,
+            "at_station_m": float(cumulative_arclength(np.vstack([poses[:best_i + 1, :2]]))[-1])
+                            if best_i else 0.0,
+            "at_pose": [float(at[0]), float(at[1]), float(at[2])]}
+
+
+def swept_bounds(front_m: float, rear_m: float, half_width_m: float, path_ego: np.ndarray,
+                 step_m: float = 0.25, start_heading_deg: float = 0.0) -> Dict[str, float]:
+    """How much road the body actually uses: the extreme left and right any corner reaches.
+
+    A plan is a line for the origin; the corridor the car needs is wider than that line and wider
+    than the car whenever the path bends.
+    """
+    poses = path_poses(path_ego, step_m=step_m, start_heading_deg=start_heading_deg)
+    corners = footprint_corners(front_m, rear_m, half_width_m)
+    left = right = fwd = None
+    for pose in poses:
+        h = math.radians(pose[2])
+        c, s = math.cos(h), math.sin(h)
+        for cx, cy in corners:
+            x = pose[0] + cx * c - cy * s
+            y = pose[1] + cx * s + cy * c
+            left = y if left is None else max(left, y)
+            right = y if right is None else min(right, y)
+            fwd = x if fwd is None else max(fwd, x)
+    return {"max_left_m": float(left), "max_right_m": float(right),
+            "corridor_width_m": float(left - right), "reach_m": float(fwd)}
 
 
 def cumulative_arclength(route_xy: np.ndarray) -> np.ndarray:

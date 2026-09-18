@@ -54,8 +54,9 @@ _ACTOR_PREFIXES = ("vehicle.", "walker.", "static.")
 # Level (baked-into-the-map) vehicles: invisible to world.get_actors() but solid.
 _PARKED_LABELS = ("Car", "Truck", "Bus", "Motorcycle", "Bicycle")
 _LANE_OPTIONS = ("LANEFOLLOW", "VOID")
-# Nominal ego footprint (Bench2Drive's ego is always a Lincoln MKZ 2020): drawn in sensors-only BEVs.
-_EGO_HALF_LEN, _EGO_HALF_WID = 2.45, 1.05
+# The ego footprint lives in config.yaml under `ego:` -- it is reported to the driver, so it is a
+# knob, not a constant. It used to be hardcoded here as (2.45, 1.05), which was the MKZ *2017*'s
+# half-width against a MKZ 2020 hero: 0.13 m too wide per side, in every sensors-only BEV.
 # RunningStopTest.point_inside_boundingbox scales stop trigger volumes by this: mirrored, not tuned.
 _STOP_BOX_MULTIPLIER = 1.2
 
@@ -71,6 +72,10 @@ HELP: Dict[str, str] = {
                                   "JPG from every camera for this tick, in "
                                   "ONE round trip. percept=true on a driving command returns the next "
                                   "one with its result. Open the JPGs you need with your file reader",
+    "clearance points [waypoints]": "how close your BODY comes to points you believe are at "
+        "ego-frame [[fwd,left],...] -- now, and over a path (the one given, else the plan in "
+        "flight). Every distance in a reply is to the ego ORIGIN, not the bodywork; this does the "
+        "subtraction. Also available as points= on percept, in the same round trip as looking",
     "render_bev": "top-down PNG (privileged: lanes, actors, lights; sensors: route + plan only)",
     "dump_frame": "state.json + cameras + bev.png into frames/frame_<step>/",
     "apply_plan waypoints ticks [target_speed] [stop_on_collision]":
@@ -182,6 +187,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._record_traj = bool(cfg["record"]["trajectory"])
         self._record_cam_id = str(cfg["record"]["camera_id"])
         self._record_every = int(cfg["record"]["camera_every_n_ticks"])
+        self._ego_body = {k: float(cfg["ego"][k]) for k in ("front_m", "rear_m", "half_width_m")}
         self._cameras = [dict(c) for c in cfg["cameras"]]
         self._percept_cams = list(cfg["percept"]["cams"])
         self._percept_scale = float(cfg["percept"]["scale"])
@@ -344,6 +350,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             tf = self.hero_actor.get_transform()
             self._ego = {"x": float(tf.location.x), "y": float(tf.location.y), "yaw": float(tf.rotation.yaw), "speed": speed}
             self._ensure_collision_sensor()
+            self._check_ego_body()
         self._advance_track_pose(speed)
         self._last_t = self._sim_time
         self._update_route_progress()
@@ -563,6 +570,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             return {"ok": True, "score": self._live_score(detail=True)}
         if name == "percept":
             return {"ok": True, **self._percept(cmd)}
+        if name == "clearance":
+            return {"ok": True, "clearance": self._clearance(cmd)}
         if name == "render_bev":
             return {"ok": True, "file": self._render_bev()}
         if name == "dump_frame":
@@ -848,6 +857,100 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             files.append(str(path.resolve()))
         return files
 
+    # ------------------------------------------------------------------ the ego's own body
+    def _check_ego_body(self) -> None:
+        """Once per privileged run, confirm config's `ego:` is the car actually spawned.
+
+        The footprint is now quoted to the driver and used for clearance arithmetic, so a stale
+        config is worse than no config: it would be confidently wrong. Only a privileged session
+        can read the real bounding box, and a sensors session inherits the guarantee because the
+        leaderboard spawns the same hero at both levels. Warn rather than fail -- losing a scored
+        route to a 2 cm discrepancy is the worse trade -- and never let this reach a reply.
+        """
+        if getattr(self, "_body_checked", False):
+            return
+        self._body_checked = True
+        bb = self.hero_actor.bounding_box
+        real = {"front_m": bb.location.x + bb.extent.x, "rear_m": bb.extent.x - bb.location.x,
+                "half_width_m": bb.extent.y}
+        off = {k: round(real[k] - self._ego_body[k], 3) for k in real}
+        if max(abs(v) for v in off.values()) > 0.05:
+            msg = (f"config ego: {self._ego_body} does not match the spawned "
+                   f"{self.hero_actor.type_id} {({k: round(v, 3) for k, v in real.items()})} "
+                   f"(off by {off}); clearances reported to the driver will be wrong by that much")
+            print(f"WARNING: {msg}", flush=True)
+        self._log({"event": "ego_body_check", "type_id": self.hero_actor.type_id,
+                   "config": self._ego_body, "measured": {k: round(v, 4) for k, v in real.items()},
+                   "off_m": off})
+
+    def _footprint(self) -> Dict[str, Any]:
+        """How big the car is and where its cameras sit. Identical at both access levels.
+
+        This is not world state: it is the vehicle the driver is driving, known before the route
+        starts, and a human driver would be told it by sitting in the car. Withholding it is what
+        made every distance in a reply ambiguous -- they are all measured from the ego ORIGIN, and
+        a driver that believes it is a point spends its own bodywork as clearance.
+        """
+        b = self._ego_body
+        return {
+            **{k: _r(v, 2) for k, v in b.items()},
+            "corners_ego": [[_r(f, 2), _r(l, 2)] for f, l in
+                            geo.footprint_corners(b["front_m"], b["rear_m"], b["half_width_m"])],
+            "note": ("every ego-frame distance in a reply is to the ego ORIGIN, not to the "
+                     "bodywork: subtract the extent on that side before calling it clearance"),
+            "cameras": [{"id": c["id"], "x": c["x"], "y": c["y"], "yaw_deg": c["yaw"], "fov_deg": c["fov"]}
+                        for c in self._cameras],
+            "camera_frame": "CARLA vehicle frame: x forward, y RIGHT, yaw clockwise (ego bearing = -yaw)",
+        }
+
+    def _plan_ego(self) -> Optional[np.ndarray]:
+        """The plan in flight, expressed in the CURRENT ego frame, or None if nothing is running."""
+        if self._mode != "plan" or self._plan_world is None or self._ego is None:
+            return None
+        e = self._ego
+        return geo.world_to_ego((e["x"], e["y"]), e["yaw"], self._plan_world)
+
+    def _clearance(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Body-to-point clearance for points the DRIVER supplies, now and over a path.
+
+        Access-safe by construction, and it must stay that way: every input is either the driver's
+        own estimate of where something is or the ego's own dimensions from config. Nothing here
+        reads `hero_actor`, the world, the map or the scenario, so it tells a sensors session
+        nothing it did not already believe -- it only does the arithmetic correctly. Do NOT be
+        tempted to snap the points to real actors on a privileged run: the two levels would then
+        answer differently and the number would stop being comparable across a benchmark.
+        """
+        b = self._ego_body
+        f, r, w = b["front_m"], b["rear_m"], b["half_width_m"]
+        pts = np.asarray(cmd.get("points") or [], dtype=np.float64).reshape(-1, 2)
+        given = cmd.get("waypoints")
+        if given is not None:
+            path, source = np.asarray(given, dtype=np.float64).reshape(-1, 2), "given"
+        else:
+            path, source = self._plan_ego(), "in_flight"
+        if path is None or len(path) < 1:
+            path, source = None, None
+
+        out: Dict[str, Any] = {"ego_body": {k: _r(v, 2) for k, v in b.items()}, "plan": source,
+                               "points": []}
+        for pt in pts:
+            entry: Dict[str, Any] = {"point_ego": [_r(pt[0], 2), _r(pt[1], 2)],
+                                     "now_m": _r(geo.point_clearance(f, r, w, pt), 2)}
+            if path is not None:
+                sw = geo.sweep_clearance(f, r, w, path, pt)
+                entry["along_plan"] = {"min_m": _r(sw["min_m"], 2),
+                                       "at_station_m": _r(sw["at_station_m"], 1)}
+            out["points"].append(entry)
+        if path is not None:
+            out["swept"] = {k: _r(v, 2) for k, v in geo.swept_bounds(f, r, w, path).items()}
+        out["legend"] = ("clearance is from the BODYWORK: 0 is touching and negative means the "
+                         "point is inside the car. `now_m` is at the current pose; `along_plan` is "
+                         "the closest the body comes while following the path, which is what "
+                         "catches a rear corner swinging into something the nose has passed. The "
+                         "path is the one asked for, not the one the controller will track (it "
+                         "lags ~0.2 m), so leave margin.")
+        return out
+
     def _percept(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """One round trip's worth of perception: the observation plus this tick's camera images.
 
@@ -868,11 +971,16 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         # tokens a reply and, on a track where nothing is evicted, are re-read on every later turn;
         # this is ~45. The driver joins dir + name, which its file reader needs anyway because its
         # working directory is not the session.
-        return {
+        out = {
             "observe": self._sensor_observe() if self._sensors_only else self._observe(k),
             "frames_dir": str(out_dir.resolve()),
             "files": [Path(f).name for f in files],
         }
+        # Looking IS the moment a clearance belief is formed, so answering it here costs no extra
+        # round trip. Same builder, same access guarantees; it reads only driver-supplied points.
+        if cmd.get("points"):
+            out["clearance"] = self._clearance(cmd)
+        return out
 
     # ------------------------------------------------------------------ sensors-only views
     def _sensor_state(self) -> Dict[str, Any]:
@@ -899,6 +1007,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
                 "source": "GNSS + compass (noisy), CARLA world frame: left-handed, yaw clockwise",
             },
             "nav": self._nav(),
+            "ego_body": self._footprint(),
             "cameras": [c["id"] for c in self._cameras],
         }
 
@@ -913,7 +1022,11 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             "cameras": st["cameras"],
             "legend": ("sensors access: the scene is only in the cameras (percept). Route points are in the "
                        "ego frame (fwd ahead, left to the LEFT), from the leaderboard's sparse GPS plan and a "
-                       "noisy GNSS pose estimate, so treat them as approximate"),
+                       "noisy GNSS pose estimate, so treat them as approximate. Distances are to the ego "
+                       f"ORIGIN: your body reaches {self._ego_body['front_m']:.2f} m ahead of it, "
+                       f"{self._ego_body['rear_m']:.2f} m behind and {self._ego_body['half_width_m']:.2f} m "
+                       "each side, so subtract that before calling a distance clearance "
+                       "(`clearance points=[[fwd,left],...]`, or points= on percept)"),
         }
 
     # ------------------------------------------------------------------ privileged views
@@ -1073,6 +1186,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
                 "length_m": _r(2 * hero.bounding_box.extent.x, 1),
                 "width_m": _r(2 * hero.bounding_box.extent.y, 1),
             },
+            "ego_body": self._footprint(),
             "lane": self._lane_info(),
             "nav": self._nav(),
             "traffic_lights": self._traffic_lights(self._state_radius),
@@ -1170,7 +1284,12 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         lanes, footprints, lights, signs = [], [], [], []
         header = f"step {self.step} t={self._sim_time:.1f}s {self._mode} v={e['speed']:.1f}m/s access={self._access}"
         if self._sensors_only:
-            ego_poly = box_polygon(0.0, 0.0, 0.0, _EGO_HALF_LEN, _EGO_HALF_WID)
+            # NOT `b`: that is the bev config above and is read again below.
+            body = self._ego_body
+            # box_polygon takes a symmetric half-length about its centre; the origin sits 6 mm off
+            # the body's middle on this vehicle, which is invisible at BEV resolution.
+            ego_poly = box_polygon((body["front_m"] - body["rear_m"]) / 2.0, 0.0, 0.0,
+                                   (body["front_m"] + body["rear_m"]) / 2.0, body["half_width_m"])
         else:
             hero = self.hero_actor
             actors = self._actors(reach)

@@ -118,3 +118,98 @@ def test_order_footprint_rectangle():
     assert np.all(np.diff(angles) > 0)
     e1, e2 = fp[1] - fp[0], fp[2] - fp[1]
     assert math.isclose(abs(e1[0] * e2[1] - e1[1] * e2[0]), 4.0)
+
+
+# --------------------------------------------------------------------------- the ego's own body
+#
+# These pin the arithmetic the driver was getting wrong: it read a distance off a camera image and
+# spent all of it, because nothing told it how much of that distance its own bodywork occupies.
+
+# The real Bench2Drive hero, and what config.yaml `ego:` says: a Lincoln MKZ 2020.
+FRONT, REAR, HALF_W = 2.44, 2.45, 0.92
+
+
+def test_a_distance_to_the_origin_is_not_a_clearance():
+    """The whole point. A car 3 m from the ego origin is 0.55 m from the bumper, and contact
+    registers at 0 -- so "3 m of room ahead" is most of a car's length short of the truth."""
+    assert g.point_clearance(FRONT, REAR, HALF_W, (3.0, 0.0)) == pytest.approx(0.56)
+    assert g.point_clearance(FRONT, REAR, HALF_W, (0.0, 1.5)) == pytest.approx(0.58)
+    assert g.point_clearance(FRONT, REAR, HALF_W, (-3.0, 0.0)) == pytest.approx(0.55)
+
+
+def test_touching_is_zero_and_inside_is_negative():
+    assert g.point_clearance(FRONT, REAR, HALF_W, (FRONT, 0.0)) == pytest.approx(0.0)
+    assert g.point_clearance(FRONT, REAR, HALF_W, (0.0, HALF_W)) == pytest.approx(0.0)
+    assert g.point_clearance(FRONT, REAR, HALF_W, (0.0, 0.0)) == pytest.approx(-HALF_W)
+    assert g.point_clearance(FRONT, REAR, HALF_W, (2.0, 0.0)) == pytest.approx(-0.44)
+
+
+def test_a_corner_is_measured_diagonally_not_per_axis():
+    """Off the corner both axes are outside, so the clearance is the hypotenuse. Taking the larger
+    of the two would over-report it by up to 41%."""
+    got = g.point_clearance(FRONT, REAR, HALF_W, (FRONT + 3.0, HALF_W + 4.0))
+    assert got == pytest.approx(5.0)
+
+
+def test_front_and_rear_are_separate_because_the_origin_is_not_the_middle():
+    """A long-nosed body: 3 m of car ahead of the origin, 1 m behind. A point and its mirror image
+    are not the same problem, which is why config splits front_m from rear_m."""
+    assert g.point_clearance(3.0, 1.0, HALF_W, (2.5, 0.0)) == pytest.approx(-0.5)   # inside the nose
+    assert g.point_clearance(3.0, 1.0, HALF_W, (-2.5, 0.0)) == pytest.approx(1.5)   # well behind
+
+
+def test_the_body_frame_is_right_handed_unlike_the_carla_world():
+    """`world_to_ego` must not be reused here: its left-handed convention would mirror the answer,
+    and a mirrored clearance looks entirely plausible."""
+    pose = (0.0, 0.0, 90.0)                                  # nose swung to the ego's LEFT
+    fwd, left = g._into_body(pose, (0.0, 10.0))              # a point 10 m to the ego's left
+    assert (fwd, left) == pytest.approx((10.0, 0.0), abs=1e-9)   # ...is now dead ahead of the body
+    fwd, left = g._into_body(pose, (10.0, 0.0))
+    assert (fwd, left) == pytest.approx((0.0, -10.0), abs=1e-9)  # ...and ahead is now to its right
+
+
+def test_the_sweep_starts_at_the_ego_not_at_the_first_waypoint():
+    """A plan's first point is metres ahead; the body covers that stretch too, and an obstacle
+    inside it would be missed by testing the waypoints alone."""
+    poses = g.path_poses([[5.0, 0.0], [10.0, 0.0]], step_m=0.5)
+    assert poses[0] == pytest.approx([0.0, 0.0, 0.0])
+    assert poses[-1][0] == pytest.approx(10.0)
+    assert len(poses) == 21
+
+
+def test_a_straight_sweep_finds_the_closest_approach_not_the_endpoint():
+    got = g.sweep_clearance(FRONT, REAR, HALF_W, [[10.0, 0.0]], (5.0, 2.0), step_m=0.1)
+    assert got["min_m"] == pytest.approx(2.0 - HALF_W, abs=0.02)
+    # A flank holds the same clearance for the whole length of the car, so the minimum is a tie
+    # across an interval; the station reported is where it is first reached, which is the nose
+    # drawing level rather than the middle of the pass.
+    assert got["at_station_m"] == pytest.approx(5.0 - FRONT, abs=0.2)
+
+
+def test_the_rear_corner_swinging_out_is_caught():
+    """The shape of several real contacts: the driver judges it is 'past' an object, turns, and
+    hits it with the back of the car. Testing only the origin's path says it is clear."""
+    path = [[4.0, 0.0], [8.0, 4.0]]                     # drive on, then bear left
+    obstacle = (3.5, -1.4)                              # off the right flank, behind the nose
+    origin_only = min(math.hypot(obstacle[0] - p[0], obstacle[1] - p[1])
+                      for p in g.path_poses(path, step_m=0.1)[:, :2])
+    body = g.sweep_clearance(FRONT, REAR, HALF_W, path, obstacle, step_m=0.1)
+    assert origin_only == pytest.approx(1.40, abs=0.05)  # the origin never gets near it
+    assert g.point_clearance(FRONT, REAR, HALF_W, obstacle) == pytest.approx(1.16, abs=0.02)
+    assert body["min_m"] == pytest.approx(-0.28, abs=0.05)   # ...the bodywork goes 0.3 m into it
+
+
+def test_a_bending_plan_needs_a_wider_corridor_than_the_car():
+    straight = g.swept_bounds(FRONT, REAR, HALF_W, [[20.0, 0.0]])
+    assert straight["corridor_width_m"] == pytest.approx(2 * HALF_W)
+    bend = g.swept_bounds(FRONT, REAR, HALF_W, [[10.0, 0.0], [20.0, 6.0]])
+    assert bend["corridor_width_m"] > 2 * HALF_W
+    assert bend["max_left_m"] > 6.0                     # the outer corner overshoots the path
+    assert bend["reach_m"] > 20.0                       # and the nose reaches past the last point
+
+
+def test_a_degenerate_plan_does_not_divide_by_zero():
+    poses = g.path_poses([[0.0, 0.0], [0.0, 0.0]])
+    assert poses.shape == (1, 3)
+    got = g.sweep_clearance(FRONT, REAR, HALF_W, [[0.0, 0.0]], (3.0, 0.0))
+    assert got["min_m"] == pytest.approx(0.56)

@@ -63,6 +63,7 @@ reviewed against the scene after the run. Write the reason you actually acted on
 | `get_state` | | everything the access level allows |
 | `get_score`\* | | live DS / RC / IS estimate plus every infraction event |
 | `percept` | `cams?` `k?` | **the per-decision view, and the only one.** Privileged: lane, route, relevant lights / stop signs, `k` nearest actors and parked cars. Sensors: ego status and route. Both: `frames_dir` plus a `files` name from **every** camera for this tick — open `<frames_dir>/<name>`. `percept=true` on a driving command returns the next one in the reply that reports the outcome, so a decision costs one round trip |
+| `clearance` | `points` `waypoints?` | how close your **body** comes to points you believe are at ego-frame `[[fwd,left],...]`: now, and over a path (the one given, else the plan in flight). Also `points=` on `percept`, in the same round trip as looking |
 | `render_bev` | | PNG path (contents per §3) |
 | `dump_frame` | | state.json + cameras + bev.png into `frames/frame_<step>/` |
 | `apply_plan` | `waypoints` `ticks` `target_speed?` `stop_on_collision?`\* | **primary driving primitive**: PID-track ego-frame waypoints for `ticks` |
@@ -87,6 +88,39 @@ reviewed against the scene after the run. Write the reason you actually acted on
   **left-handed** (+y is to the right of +x, and yaw increases clockwise). If you ever convert by
   hand: `fwd = dx·cos(yaw) + dy·sin(yaw)`, `left = dx·sin(yaw) − dy·cos(yaw)`. Prefer the ego-frame
   fields.
+
+### 5.1 You are not a point
+
+Every ego-frame distance in a reply — `route_points_ego`, an actor's `fwd`/`left`, a plan waypoint
+— is measured from the ego **origin**. Your bodywork is not there. On the Bench2Drive hero it
+reaches **2.44 m ahead of the origin, 2.45 m behind, and 0.92 m to each side** (`get_state` →
+`ego_body`, from `config.yaml`). The front camera is mounted a further 0.8 m forward still, so a
+car you judge "3 m away" in `CAM_FRONT` is about **1.4 m from your bumper**.
+
+This matters more than it sounds. Two cars touch when their centres reach the sum of their
+half-extents: roughly **4.8 m nose to nose and 2.0 m flank to flank**. A "3 m gap" ahead is not a
+gap. Measured over a whole corpus, the single largest cause of lost score was committing to a
+manoeuvre with a stated margin of half a metre to two metres — margins that were already contact.
+
+So: **a distance is not a clearance until you subtract your own extent on that side.** Rather than
+do that arithmetic in your head, hand the daemon the points you believe are there:
+
+```
+clearance points=[[3.0, -1.2], [8.0, 0.4]]
+clearance points=[[3.0, -1.2]] waypoints=[[4,0],[8,4]]     # ...and over a candidate path
+percept points=[[3.0, -1.2]]                               # ...in the same round trip as looking
+```
+
+It answers from your own estimates and your own dimensions — it cannot see anything you cannot —
+and returns `now_m` (clearance at your current pose) and `along_plan.min_m` (the closest your body
+comes while following the path). **Negative means you drive through it.** The sweep rotates the
+whole rectangle along the path, so it catches the case that pure forward reasoning misses: a rear
+corner swinging into something your nose has already cleared. `swept.corridor_width_m` says how
+much road the manoeuvre actually needs, which is more than the width of the car whenever it bends.
+
+Two caveats. The path checked is the one you asked for, not the one the controller will track —
+it aims at a single lookahead point and lags by roughly 0.2 m — so keep margin beyond zero. And
+the points are *your* estimates: the answer is only as good as they are.
 
 ## 6. The drive loop
 
