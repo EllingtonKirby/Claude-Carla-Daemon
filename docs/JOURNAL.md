@@ -135,9 +135,96 @@ observed value. `tools/pool_report.py` prints the split and projects the standar
 experiment sizes; read it before ordering a re-run. It is also worth asking whether resolving the
 delta would change any decision, which is a cheaper question and was answered "no" the first time.
 
+### 1.9 Rank causes by what they cost, not by how often they fire
+
+The scorer logs every infraction as an event, and the natural first move is to count the events.
+On the first corpus that ranking is not merely imprecise, it is inverted: the two most frequent
+classes fired 1088 and 837 times and cost about 3 DS a session between them, while the class that
+fired 37 times cost 20 — more than every other cause combined.
+
+The reason is structural and will not go away: leaderboard 2.0 has two kinds of penalty. Some
+classes multiply the score once per event; others scale it once by the fraction of the route
+affected, however many events they log. A frequency table mixes the two and reads as though the
+percentage-based classes dominate.
+
+So before choosing what to study, convert to points: for each class, how much DS would come back
+if that class alone were removed. `tools/collisions.py` prints that ledger. The entries overlap —
+penalties multiply, so they are a ranking rather than a partition — but a ranking is what the
+decision needs, and it took one offline pass over sessions already on disk.
+
+### 1.10 The driver writes down its reasoning; read it against the ground truth
+
+Every command carries a `why`, and at the moment something goes wrong that sentence says what the
+driver believed. Put it beside the recorder's account of where things actually were and the error
+stops being "the driver crashed" and becomes a specific false belief with a magnitude.
+
+That comparison is what separated the two explanations we could not choose between from the score
+alone. "The driver does not look" died on it: on 45 of 49 collisions it had opened a camera within
+a second of impact, and on 43 of 46 it had opened the camera covering the bearing the hit came
+from. What survived was narrower and quantified — the driver names the object it is about to hit,
+states a margin, and the margin is short by roughly its own half-extent.
+
+Two working rules. Read the `why` at the event, not the session summary: the belief that matters is
+the one held at the moment of commitment, and it is usually contradicted by the previous decision's
+`why` as well. And check the driver's claims about the daemon rather than repeating them — two
+runs independently reported that the controller will not reverse, which was worth confirming in the
+code (it is true) before it went into a finding.
+
 ## 2. Log
 
 Newest first. One entry per experiment: what ran, at which commit, what it showed, what it changed.
+
+### 2026-09-18 — where the points actually go: a post-mortem of every collision
+
+*Same 60 sessions as the A/B below; no new runs. CARLA recorder ground truth decoded for the 39
+sessions that logged a collision, then 49 events reconstructed offline.*
+
+The A/B left the question "if plan geometry was not costing the score, what is?" open. Answering it
+needed no compute, only the sessions already on disk.
+
+**The ledger.** Route completion is nearly free — 55 of 60 sessions finish, mean route score 94.9 —
+so the entire loss is penalty. Vehicle contact accounts for 57% of all DS lost, more than every
+other cause combined; the two classes that fire most often account for 8% (§1.9).
+
+**What the driver was doing.** 49 collisions. 36 of them with no brake applied, 33 of those on the
+throttle; only 2 under sustained braking. Median speed at impact 2.0 m/s, and below 1 m/s on a
+third of them. These are not failures to stop in time — they are low-speed drives into things.
+
+**It is not attention.** The driver had opened a camera within a second of impact on 45 of 49
+events, and the camera covering the bearing the hit came from on 43 of 46. Exactly one event is
+"a camera covered it and the driver never opened it". Two more fell in a blind sector of the rig
+itself, between where the front-quarter cameras stop and where the rear camera starts — a rig
+property with a measurable fix. The withdrawn "driver never looks" finding (§1.3) is now not just
+unsupported but contradicted.
+
+**It is metric estimation.** Contact registers when the two centres reach the sum of their
+half-extents: a median 4.7 m nose to nose, 2.0 m flank to flank. Those are exactly the separations
+the driver quotes in `why` as the clearance it is working with. It measures to the object and
+spends the whole margin, reserving nothing for its own body — its bumper is about 2.4 m ahead of
+the point it reasons from. On a single-pass reading of all 49, 22 are that error and 6 more are the
+same error in time rather than space (time-to-arrival of oncoming traffic at a turn). Together 57%.
+
+**Headroom is real.** Five of 49 are events no change to the driver would prevent — struck from
+behind, or stationary and struck. The benchmark is not scoring a lottery.
+
+Route-level detail, the per-event dump and the classification stay out of the repo:
+`tmp/collision-postmortem.md` in the gitignored scratch dir of the working copy and beside the
+sessions on the run host.
+
+New tooling: `tools/collisions.py`, with tests. Three traps it now pins, all of which produce a
+confident wrong answer rather than an error: the location in a collision message is the **ego's**
+own position, not the struck actor's (median 0.21 m from the driver's pose over 49 events), so
+using it as the hazard's position makes every impact look head-on; the recorder numbers its frames
+from 1, so a missing offset returns poses from a different moment that still look like driving; and
+a CARLA camera yaw is clockwise, so a sign error swaps which side the driver was looking at. The
+first measure of "did the driver react" was also wrong and had to be replaced — any brake tick in
+the five seconds before impact is true of almost every collision, because the controller brakes
+whenever a plan runs out. Only the unbroken brake run that reaches the impact separates trying to
+stop from happening to have braked.
+
+Not done, and not authorised: mounting a range sensor, reporting the ego footprint in replies,
+letting the controller reverse, or closing the blind sector. The post-mortem argues for them in
+that order.
 
 ### 2026-09-18 — the guide rewrite A/B, completed at three attempts per arm
 

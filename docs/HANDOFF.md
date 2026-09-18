@@ -362,6 +362,24 @@ are in command order.
     and projects the standard error at other experiment sizes. Read that before ordering a rerun.
   Session-dir layout is a convention of the wrappers around `run_eval.sh`, not of the repo;
   override it with `--glob`. Output carries per-route scores, so keep it out of the tree.
+- `python tools/collisions.py BEFORE=p1,p2 AFTER=q1,q2 [--jsonl PATH] [--dump]`: one record per
+  collision, with the decision that produced it. Collisions are worth their own instrument because
+  they are where the score goes: on the first measured corpus, vehicle collisions cost **57% of all
+  lost DS**, more than every other infraction class combined, while the classes that fire most
+  often cost almost nothing. Each event gets the impact bearing and both actors' speeds from the
+  recording, whether the brake went on and how long before, which cameras the driver had opened
+  and whether any of them covered the bearing the hit came from, and the plan and `why` in flight.
+  It classifies nothing: `--dump` lays each event out for reading. Three traps it exists to stop
+  you falling into:
+  - **the location in the collision message is the ego's, not the struck actor's** (measured: a
+    median 0.21 m from the driver's own pose). Bearings come from `recorder_truth.json`, so run
+    `tools/recorder_truth.py` over the sessions first or the geometry fields are simply absent.
+  - **the recorder numbers its frames from 1.** A missing `frame_offset` gives poses from another
+    moment that still look like driving. The tool checks the mapping against the driver's own
+    track and drops truth-derived fields rather than reporting them wrong.
+  - **a CARLA camera yaw is clockwise.** Coverage is computed from the session's own `cameras:`
+    snapshot, in the ego frame; this rig has a blind sector over each shoulder, roughly 105-125
+    degrees, which the tool reports separately from "the driver did not look that way".
 - `python tools/percept_video.py SESSION_DIR...`: mp4 from `frames/`, one panel per decision — the
   three forward cameras and the back camera as the driver saw them. Panels are decisions, not even
   intervals of sim time.
