@@ -37,6 +37,13 @@ What follows:
   protocol's rule of thumb said all along.
 - Report the spread, not just the mean. A table of means hides exactly the thing that decides
   whether the means mean anything.
+- **Stability has to hold in both arms, and it often does not.** A baseline that repeats bounds the
+  *baseline's* noise; it says nothing about the arm you are comparing it to. Both routes that
+  repeated exactly in the baseline above came back bimodal under the guide change, swinging 40 and
+  50 points. Once the second arm was measured, **no route on the dev set was stable in both arms**,
+  so three attempts supports no per-route claim at all — only the pooled one. `tools/pool_report.py`
+  enforces this; the earlier version classified on the baseline alone and would have reported both
+  of those routes as clean wins.
 
 ### 1.2 Prefer per-decision metrics to per-route scores
 
@@ -93,9 +100,84 @@ wall-clock of an A/B.
   launcher, and a timeout that accounts for a cold connection.
 - More on the port spacing, `pgrep -f` and script-editing hazards in `docs/HANDOFF.md` §6.
 
+### 1.7 A defect you eliminate is not a defect that mattered
+
+The first guide A/B removed its target completely: the geometric fault the rewrite was written to
+fix fell from 71% of plans to 0.4%, over ~900 plans per arm, with every supporting measure moving
+the same way. DS did not follow. Pooled over the dev set the mean rose 9 points with a 95%
+interval of −4 to +23, and no route was stable enough in both arms to carry a delta of its own.
+
+The lesson is not that per-decision metrics are unreliable — §1.2 stands, and the geometry result
+is by far the most certain thing this corpus has produced. It is that **a per-decision metric is a
+proxy, and eliminating it proves the edit worked, not that the edit mattered.** The two questions
+are separate and need separating in advance:
+
+- *Did the change land?* Per-decision counters answer this, tightly, with a few hundred samples.
+- *Did it help?* Only the outcome answers this, and it costs two orders of magnitude more samples.
+
+So: when a guide change fully lands and the score does not move, the honest conclusion is that the
+behaviour was not what was costing points — which redirects the next experiment rather than
+condemning the change. Do not quietly re-report the proxy as the result, and do not keep spending
+attempts hoping the outcome catches up.
+
+### 1.8 Decompose the noise before buying more of the experiment
+
+When a pooled delta lands inside its interval, the reflex is to run more attempts. Check first
+which axis the uncertainty is actually on, because two components need different purchases:
+
+- **attempt noise** — each arm's per-route mean is itself sampled, and *more attempts* shrink it;
+- **route-to-route variation in the true effect** — the change may help some routes and hurt
+  others, and only *more routes* shrink that. More attempts never will.
+
+On the first A/B the split was roughly 80/20, so attempts were the efficient axis — but with a
+floor: even infinitely many attempts on ten routes left the standard error at about half its
+observed value. `tools/pool_report.py` prints the split and projects the standard error at other
+experiment sizes; read it before ordering a re-run. It is also worth asking whether resolving the
+delta would change any decision, which is a cheaper question and was answered "no" the first time.
+
 ## 2. Log
 
 Newest first. One entry per experiment: what ran, at which commit, what it showed, what it changed.
+
+### 2026-09-18 — the guide rewrite A/B, completed at three attempts per arm
+
+*Bench2Drive, sensors track, 10-route dev set, `claude-opus-5`, stock config, `TM_SEED=0`.
+Three attempts per route in each arm, 60 sessions, each arm at a single pinned commit
+(§1.5, verified from `session.json:repo_commit`).*
+
+Completes the comparison that the 2026-09-17 entry below left at one attempt in the rewrite arm.
+
+**Geometry: the rewrite landed in full.** The aim-point fault it targeted went from 71% of plans
+to 0.4%; median aim bracket more than halved, waypoints per plan rose, reach fell toward the
+distance a burst actually covers. ~900 plans per arm, so none of this is noise.
+
+**Score: no measurable change.** Pooled over the nine steering routes the mean rose 9.3 DS, sd of
+the per-route deltas 17.1, SE 5.7, t = 1.64 on 8 df, 95% CI −3.8 to +22.5; six of nine routes
+improved (sign test p ≈ 0.5). Not one route was stable in both arms. Both of the routes that had
+looked like clean wins on a single attempt were deterministic in the baseline and bimodal under
+the rewrite — see §1.1.
+
+Decision: **no further attempts.** The rewrite is kept on the geometry, which is unambiguous and
+is what the edit was for; the DS question is left open rather than bought down, because ~160 more
+sessions would move a p-value without changing what we would do (§1.7, §1.8). The open problem
+moves upstream: the driver already opens more than two camera images per decision and still
+collides, so what it fails to extract from them — not how it draws the path afterwards — is where
+the score is going.
+
+Two regressions logged and not explained: the straight-plan flag rose from 9% to 15% despite the
+rewrite adding a warning about it (the benign reading is mechanical — shorter reach means fewer
+plans extend into a bend — and is unverified), and worst-case tracking error grew while the median
+held.
+
+Tooling: `tools/pool_report.py` and `tools/looks.py` promoted out of the gitignored scratch dir
+with tests. Four bugs were found in the pooler while promoting it, every one of which rendered as
+a plausible result rather than an error — flags read as dict keys so every violation rate printed
+0.0%, stability judged on the baseline arm alone, the route id scanned out of the path so a parent
+directory could become the route, and the report-only route hardcoded. An instrument a conclusion
+rests on belongs in `tools/` with tests, not in `tmp/`.
+
+Route-level numbers stay out of the repo: `tmp/guide-ab-results.md`, in the gitignored scratch dir
+of the working copy and beside the session dirs on the run host.
 
 ### 2026-09-17 — guide rewrite A/B, and a noise floor
 
@@ -118,7 +200,7 @@ infraction class had disappeared, which was an artefact of the summary table omi
 raw `result.json` before claiming an infraction class changed.
 
 Route-level numbers and the full write-up stay out of the repo: `tmp/guide-corpus-findings.md` and
-`tmp/guide-rewrite-ab.md` on the run host, alongside the session dirs.
+`tmp/guide-rewrite-ab.md` in the gitignored scratch dir of the working copy.
 
 New tooling from this round: `tools/plan_lint.py` (offline plan geometry linter) and
 `tools/percept_video.py` (one video panel per decision, from the images the driver opened).
