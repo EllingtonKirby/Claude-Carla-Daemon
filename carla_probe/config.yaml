@@ -155,6 +155,19 @@ vla:
   # Cap on the ticks one `drive` may run: the driver must come back and look.
   max_ticks: 200
 
+# blue_oracle: BLUE's stock agent with the LLM as its commentary module (carla_probe/
+# blue_oracle_agent.py, run by scripts/run_blue_eval.sh AGENT=oracle). Read by that agent, not the
+# daemon. When BLUE's gate fires, the model's commentary is replaced by `model`'s sentence about
+# the same frame, re-encoded with SimLingo's tokenizer and embeddings.
+blue_oracle:
+  model: claude-opus-5
+  # Reuse the last sentence when the gate fires again within this many frames (0 = ask every time;
+  # the gate tends to fire on runs of consecutive frames, ~20 Hz).
+  reuse_frames: 0
+  timeout_s: 180.0
+  # Also generate what SimLingo would have said, for the log (and as the fallback).
+  log_native: true
+
 record:
   trajectory: true            # per-tick pose + control to trajectory.jsonl (cheap)
   camera_id: CAM_FRONT        # camera logged to camera_log/ when frame recording is on
