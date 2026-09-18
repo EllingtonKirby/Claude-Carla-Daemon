@@ -343,6 +343,25 @@ are in command order.
   controller's aim point lands, tracking error, and flags for the failure shapes. Hundreds of
   samples per corpus where `result.json` gives one, so this is the instrument to compare guide or
   config changes with (`docs/JOURNAL.md` §1.2).
+- `python tools/looks.py 'sessions/PREFIX_r*_sensors'`: how often the driver looked, and how many
+  camera frames it actually opened. Use it rather than counting `cmd == "percept"`, which
+  undercounts roughly thirtyfold: the driver mostly looks by riding `percept=true` on the driving
+  command. `imgs` (the driver's own `Read` calls on frame paths) is the cross-check that a look
+  was used rather than merely requested. Counting the standalone command alone once produced a
+  "the driver never looks" finding that had to be withdrawn (`docs/JOURNAL.md` §1.3).
+- `python tools/pool_report.py BEFORE=p1,p2,p3 AFTER=q1,q2,q3`: the A/B instrument. Each prefix is
+  one attempt at a whole route set, so three prefixes is three attempts per route. It prints every
+  attempt's DS per route with each arm's spread, the paired test over routes, the per-plan geometry
+  and look rates for both arms, and it refuses to pool an arm whose sessions span more than one
+  commit (`benchmark/PROTOCOL.md` rule 2). Two things it is built to stop you doing:
+  - **reading a delta on a route that does not repeat.** A route counts as stable only if its
+    spread is small in *both* arms; a deterministic baseline bounds the baseline's noise, not the
+    other arm's, and the two come apart in practice.
+  - **spending compute on the wrong axis.** It splits the uncertainty into attempt noise (more
+    attempts shrink it) and genuine route-to-route variation in the effect (only more routes do),
+    and projects the standard error at other experiment sizes. Read that before ordering a rerun.
+  Session-dir layout is a convention of the wrappers around `run_eval.sh`, not of the repo;
+  override it with `--glob`. Output carries per-route scores, so keep it out of the tree.
 - `python tools/percept_video.py SESSION_DIR...`: mp4 from `frames/`, one panel per decision — the
   three forward cameras and the back camera as the driver saw them. Panels are decisions, not even
   intervals of sim time.
