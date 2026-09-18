@@ -362,6 +362,21 @@ are in command order.
     and projects the standard error at other experiment sizes. Read that before ordering a rerun.
   Session-dir layout is a convention of the wrappers around `run_eval.sh`, not of the repo;
   override it with `--glob`. Output carries per-route scores, so keep it out of the tree.
+- `python tools/clearance_lint.py BEFORE=p1,p2 AFTER=q1,q2 [--near M] [--jsonl PATH]`: how much
+  room the driver actually left, once per plan. Needs `recorder_truth.json` per session and
+  `tools/actor_extents.json`. This is the sensitive endpoint for anything about margins: a corpus
+  yields ~50 collisions but ~1800 plans, so a change that would take ~160 sessions to move DS
+  shows up in one offline pass over sessions already on disk. It reports the clearance
+  distribution per arm, the near-miss rate paired per route with a t-statistic, and — the check
+  that stops the headline being an artefact — distance driven per plan, because a per-plan rate
+  falls whenever plans get shorter, whether or not the driving improved. Read `<0.50m` as the
+  measurement and `overlap` as an upper bound: validated against the scorer on the first corpus,
+  52 of 60 sessions agree, with a ~9% plan-level over-count concentrated on bicycles and
+  pedestrians whose blueprint boxes are generous. It cannot see contacts with map geometry.
+- `python tools/actor_extents.py [--rebuild --types ...]`: body extents per CARLA blueprint,
+  cached in `tools/actor_extents.json` so clearance analysis stays offline. The recording stores
+  where every actor was but not how big it is, and a centre-to-centre distance is not a clearance.
+  `--rebuild` needs a CARLA server and spawns each blueprint once; everything downstream does not.
 - `python tools/collisions.py BEFORE=p1,p2 AFTER=q1,q2 [--jsonl PATH] [--dump]`: one record per
   collision, with the decision that produced it. Collisions are worth their own instrument because
   they are where the score goes: on the first measured corpus, vehicle collisions cost **57% of all

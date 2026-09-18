@@ -1,0 +1,107 @@
+{
+ "static.prop.constructioncone": {
+  "front_m": 0.1716,
+  "half_width_m": 0.1725,
+  "rear_m": 0.1716
+ },
+ "static.prop.dirtdebris02": {
+  "front_m": 0.9266,
+  "half_width_m": 0.7595,
+  "rear_m": 0.9266
+ },
+ "static.prop.trafficwarning": {
+  "front_m": 1.1827,
+  "half_width_m": 1.4386,
+  "rear_m": 1.1827
+ },
+ "static.prop.warningconstruction": {
+  "front_m": 0.651,
+  "half_width_m": 0.5293,
+  "rear_m": 0.651
+ },
+ "vehicle.audi.tt": {
+  "front_m": 2.0902,
+  "half_width_m": 0.9971,
+  "rear_m": 2.091
+ },
+ "vehicle.bh.crossbike": {
+  "front_m": 0.7547,
+  "half_width_m": 0.433,
+  "rear_m": 0.7547
+ },
+ "vehicle.chevrolet.impala": {
+  "front_m": 2.6788,
+  "half_width_m": 1.0166,
+  "rear_m": 2.6787
+ },
+ "vehicle.dodge.charger_2020": {
+  "front_m": 2.4986,
+  "half_width_m": 0.9408,
+  "rear_m": 2.5093
+ },
+ "vehicle.dodge.charger_police": {
+  "front_m": 2.5108,
+  "half_width_m": 1.0192,
+  "rear_m": 2.4635
+ },
+ "vehicle.dodge.charger_police_2020": {
+  "front_m": 2.7283,
+  "half_width_m": 0.9649,
+  "rear_m": 2.5093
+ },
+ "vehicle.ford.ambulance": {
+  "front_m": 2.8943,
+  "half_width_m": 1.1756,
+  "rear_m": 3.4714
+ },
+ "vehicle.ford.crown": {
+  "front_m": 2.8682,
+  "half_width_m": 0.9004,
+  "rear_m": 2.4974
+ },
+ "vehicle.ford.mustang": {
+  "front_m": 2.3909,
+  "half_width_m": 0.9474,
+  "rear_m": 2.3266
+ },
+ "vehicle.gazelle.omafiets": {
+  "front_m": 0.9117,
+  "half_width_m": 0.3295,
+  "rear_m": 0.9317
+ },
+ "vehicle.lincoln.mkz_2017": {
+  "front_m": 2.4549,
+  "half_width_m": 1.0642,
+  "rear_m": 2.4468
+ },
+ "vehicle.lincoln.mkz_2020": {
+  "front_m": 2.4399,
+  "half_width_m": 0.9184,
+  "rear_m": 2.4525
+ },
+ "vehicle.mercedes.coupe_2020": {
+  "front_m": 2.3342,
+  "half_width_m": 0.9059,
+  "rear_m": 2.3394
+ },
+ "vehicle.mini.cooper_s_2021": {
+  "front_m": 2.2451,
+  "half_width_m": 1.0485,
+  "rear_m": 2.3076
+ },
+ "vehicle.nissan.patrol_2021": {
+  "front_m": 2.8113,
+  "half_width_m": 1.075,
+  "rear_m": 2.7545
+ },
+ "vehicle.tesla.model3": {
+  "front_m": 2.4251,
+  "half_width_m": 1.0817,
+  "rear_m": 2.3667
+ },
+ "walker.pedestrian.0048": {
+  "front_m": 0.25,
+  "half_width_m": 0.25,
+  "rear_m": 0.25
+ }
+}

@@ -115,10 +115,18 @@ are separate and need separating in advance:
 - *Did the change land?* Per-decision counters answer this, tightly, with a few hundred samples.
 - *Did it help?* Only the outcome answers this, and it costs two orders of magnitude more samples.
 
-So: when a guide change fully lands and the score does not move, the honest conclusion is that the
-behaviour was not what was costing points — which redirects the next experiment rather than
-condemning the change. Do not quietly re-report the proxy as the result, and do not keep spending
-attempts hoping the outcome catches up.
+So: when a guide change fully lands and the score does not move, do not quietly re-report the
+proxy as the result, and do not keep spending attempts hoping the outcome catches up.
+
+**Amended 2026-09-18, and the amendment is the more useful half.** The original wording went on to
+say that a flat score means "the behaviour was not what was costing points". That was wrong here.
+A near-miss counter built later on the same 60 sessions found the rewrite cut the rate of plans
+leaving under half a metre by 5.4 points, t = −4.49, eight of nine routes improving — the change
+did improve the driving, and DS was simply too blunt to show it (§1.11). The rule survives; the
+inference drawn from it does not. A flat outcome licenses "this experiment did not resolve
+whether it helped", and nothing stronger. Before concluding that a behaviour does not matter, look
+for a denser measure of the same thing — the third option, between the proxy and the outcome, is
+usually there and is usually already recorded.
 
 ### 1.8 Decompose the noise before buying more of the experiment
 
@@ -170,9 +178,81 @@ the one held at the moment of commitment, and it is usually contradicted by the 
 runs independently reported that the controller will not reverse, which was worth confirming in the
 code (it is true) before it went into a finding.
 
+### 1.11 When the outcome is too rare to measure, measure what produces it
+
+A 60-session corpus yields about 50 collisions, which is not enough to tell whether a change
+helped: the first guide A/B moved DS by 9 points with an interval four times that wide, and
+resolving it would have cost ~160 more sessions. The same corpus contains about 1,800 plans, and
+for each one the recording says how close the car came to anything. A near miss is the same
+behaviour as a collision with a better draw, so the dense quantity and the sparse one measure the
+same thing — and the dense one is already on disk.
+
+The pattern generalises past collisions. Before buying more samples of a rare outcome, ask what
+continuous quantity it is the tail of, and whether the recording already contains it. The rare
+event is what you care about; its precursor is what you can afford to measure.
+
+Two things this only works with:
+
+- **Bodies, not centres.** The whole reason the metric is interesting is the distinction between
+  a distance to an object and the room left beside it, which means every actor's extent has to be
+  known. `tools/actor_extents.json` measures each blueprint once against a live server.
+- **A normaliser.** A per-decision rate falls whenever decisions get shorter, whether or not
+  anything improved. `clearance_lint` reports distance driven per plan next to the rate for
+  exactly this reason, and the first result had to survive that check before it could be believed.
+
+And one discipline: pick the threshold before looking, then show the answer across a range of
+them. A near-miss rate at one cut-off is a choice; the same sign and size from 0.15 m to 1.0 m is
+a finding.
+
 ## 2. Log
 
 Newest first. One entry per experiment: what ran, at which commit, what it showed, what it changed.
+
+### 2026-09-18 — a near-miss counter, and the guide rewrite turns out to have worked
+
+*The same 60 sessions again; no new runs. Ground truth decoded for all 60 this time, not just the
+39 that logged a collision — restricting to those would have biased the clearance distribution
+toward the dangerous ones.*
+
+Built to give the footprint change (`4867728`) something to be measured by, since DS cannot resolve
+anything at this corpus size (§1.11). `tools/clearance_lint.py` reports, once per `apply_plan`, the
+smallest gap between the ego's body and any other road user's body over the burst, from the
+recording. **1,812 plans against 49 collisions**, and the pass takes 14 seconds.
+
+**Validated against the scorer before being used.** Per session, 52 of 60 agree on whether anything
+was hit. The one false negative is a contact with map geometry, which the counter excludes by
+design. The false positives are a ~9% plan-level over-count concentrated on bicycles and
+pedestrians, whose blueprint boxes are generous next to the physics — so the overlap count is an
+upper bound and the near-miss rate is the measurement.
+
+**The result: the guide rewrite worked after all.** Paired over the nine steering routes, the rate
+of plans leaving under half a metre fell by 5.4 points, sd 3.6, SE 1.2, t = −4.49 on 8 df, with
+eight of nine routes improving. On the same 60 sessions DS moved +9.3 with t = 1.64 and an
+interval from −4 to +23. The entry below concluded "the behaviour was not what was costing the
+points"; the honest correction is narrower — **the change did improve the driving, and DS was too
+blunt to show it.** §1.7 still stands on its own terms (eliminating a proxy does not prove the
+proxy mattered), but its worked example was wrong about this corpus.
+
+Two checks before believing the size of it. Plan length did not change (4.3 → 4.4 m driven per
+plan), so the rate is not falling because plans got shorter; normalised, near misses per 100 m
+driven fall 4.79 → 3.78, a 21% reduction. And the effect holds at every threshold from 0.15 m to
+1.0 m and disappears at 1.5 m, which is the right shape: what went away were the tight passes, not
+ordinary driving.
+
+It is post-hoc — the counter was built after the collision analysis, on the same corpus — so this
+wants confirming on fresh data before it is leaned on. Its intended use is as the pre-change
+baseline for the footprint work, with the prediction written down in advance: the near-miss rate
+should fall below the current arm's 16.7%, paired per route, detectable at t ≈ 3 on 30 sessions
+rather than the ~160 DS would need.
+
+Route-level rates stay out of the repo: `tmp/near-miss-baseline.md` in the gitignored scratch dir
+of the working copy and beside the sessions on the run host.
+
+New tooling: `tools/clearance_lint.py` and `tools/actor_extents.py` (blueprint extents, measured
+once against a live server and cached, because the recording stores where every actor was but not
+how big it is). One bug worth naming, caught by reading the output rather than by a test: the
+arms printed in alphabetical order, so `BEFORE → AFTER` rendered as `AFTER → BEFORE` and the delta
+read with its sign reversed. Direction is the one thing a reader takes straight off a report.
 
 ### 2026-09-18 — where the points actually go: a post-mortem of every collision
 
