@@ -92,6 +92,12 @@ BENCHMARK=fail2drive source scripts/env.sh       # fail2drive
 
 # 4. Offline tests (unit + fake-simulator sessions for both tracks; no GPU needed).
 pytest
+
+# 5. Optional: the learned driving policy behind the `drive` command (docs/DESIGN.md). Its own
+#    Python 3.8 + torch venv, the SimLingo checkpoint (2.6 GB) and InternVL2-1B (1.9 GB), all under
+#    third_party/. Needs third_party/BLUE (git clone git@github.com:George-Ling3/BLUE.git) and a
+#    spare GPU with ~3 GB. Then start it before a VLA=on run: bash scripts/run_vla_server.sh --device cuda:1
+bash scripts/setup_vla.sh
 ```
 
 **Pass:** `env.sh` prints `env ready` (the first run also lists `ok: carla_probe.agent`), `pytest`
@@ -228,8 +234,10 @@ down mid-route with no score. For runs that may outlive your session, detach it:
 `bash scripts/clean_carla.sh <CARLA_PORT>`, and report the run as aborted (`benchmark/PROTOCOL.md`
 rule 2). Env overrides: `GPU_RANK`, `CARLA_PORT`,
 `PROBE_PORT` (for parallel runs), `SIM_RECORD`, `RECORD_CAMERA_EVERY` (§5.1), `LOAD_TIMEOUT_S`,
-`AUTOCOMPACT`, `ISOLATION_CHECK=0`, `CHECK_MODEL`. What it
-does:
+`AUTOCOMPACT`, `ISOLATION_CHECK=0`, `CHECK_MODEL`, `VLA=on` (the learned policy; needs
+`scripts/run_vla_server.sh` running, and appends one sentence to the driver prompt),
+`DRIVER=baseline_vla | baseline_route` (no LLM: the policy told nothing, or the blind
+route-follower; MODEL is then a label). What it does:
 
 1. Launches `scripts/run_session.sh` into a fresh `sessions/<stamp>_route_<id>_<track>/` and waits
    until the route is loaded and paused, checking the reported `access`.

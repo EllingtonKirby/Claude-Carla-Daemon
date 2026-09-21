@@ -30,6 +30,11 @@
 #           the daemon re-supplies the scene on every percept, so what it destroys is looks the
 #           driver has already acted on.
 #      SIM_RECORD (1)  RECORD_CAMERA_EVERY (config value): recording knobs, passed to run_session.sh
+#      VLA (config value): on | off -- the learned policy behind the daemon's `drive` command; `on`
+#           needs scripts/run_vla_server.sh running, and adds one sentence to the driver prompt
+#           saying the command exists (recorded in driver.json)
+#      DRIVER (claude): claude | baseline_vla | baseline_route -- the two baselines need no LLM
+#           (carla_probe/baseline_driver.py) and skip the sandbox; MODEL is then just a label
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,7 +43,15 @@ ROUTE="${1:?$USAGE}"
 TRACK="${2:?$USAGE}"
 MODEL="${3:?$USAGE}"
 case "$TRACK" in sensors | privileged) ;; *) echo "ERROR: track must be sensors or privileged" >&2; exit 1 ;; esac
-command -v claude >/dev/null || { echo "ERROR: claude (Claude Code CLI) not on PATH" >&2; exit 1; }
+: "${DRIVER:=claude}"
+: "${VLA:=}"
+case "$DRIVER" in
+    claude) command -v claude >/dev/null || { echo "ERROR: claude (Claude Code CLI) not on PATH" >&2; exit 1; } ;;
+    baseline_vla) VLA=on ;;
+    baseline_route) ;;
+    *) echo "ERROR: DRIVER must be claude, baseline_vla or baseline_route" >&2; exit 1 ;;
+esac
+export VLA
 
 export BENCHMARK="${BENCHMARK:-bench2drive}"
 case "$BENCHMARK" in
@@ -66,8 +79,13 @@ mkdir -p "$SESSION_DIR"
 PY="$REPO_ROOT/.venv/bin/python"
 ADDR="127.0.0.1:$PROBE_PORT"
 
-echo "=== eval: $BENCHMARK route $ROUTE, track $TRACK, model $MODEL"
+echo "=== eval: $BENCHMARK route $ROUTE, track $TRACK, model $MODEL, driver $DRIVER${VLA:+, vla $VLA}"
 echo "    session: $SESSION_DIR"
+if [ "$VLA" = on ]; then
+    VLA_ADDR="$(sed -n '/^vla:/,/^[a-z]/p' "$REPO_ROOT/carla_probe/config.yaml" | awk '/addr:/{print $2}')"
+    curl -sf "http://$VLA_ADDR/health" > /dev/null \
+        || { echo "ERROR: no VLA service at $VLA_ADDR (start scripts/run_vla_server.sh)" >&2; exit 1; }
+fi
 
 # ---- 1. session --------------------------------------------------------------------------------
 ACCESS="$TRACK" bash "$REPO_ROOT/scripts/run_session.sh" "$ROUTE" "$SESSION_DIR" > "$SESSION_DIR/launcher.log" 2>&1 &
@@ -89,6 +107,20 @@ fi
 
 # ---- 2. driver sandbox ---------------------------------------------------------------------------
 DRIVER_WS="$(mktemp -d "${TMPDIR:-/tmp}/probe_driver.XXXXXX")"
+if [ "$DRIVER" != claude ]; then
+    # A scripted baseline: no sandbox, no isolation check, no prompt. Same session, same scoring.
+    cat > "$SESSION_DIR/driver.json" <<EOF
+{"model": "$MODEL", "driver": "$DRIVER", "vla": "${VLA:-off}", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
+ "started": "$(date -Iseconds)"}
+EOF
+    echo "    baseline driver running ($DRIVER; log: $SESSION_DIR/driver_stdout.log)"
+    "$PY" -m carla_probe.baseline_driver "$ADDR" --policy "${DRIVER#baseline_}" \
+        > "$SESSION_DIR/driver_stdout.log" 2>&1 || echo "    baseline driver exited with an error (see driver_stdout.log)"
+    wait "$LAUNCH_PID" || true
+    echo "=== eval done -> $SESSION_DIR"
+    "$PY" "$REPO_ROOT/tools/summarize_results.py" "$SESSION_DIR" || true
+    exit 0
+fi
 cat > "$DRIVER_WS/settings.json" <<EOF
 {
   "sandbox": {"enabled": false},
@@ -121,6 +153,14 @@ $REPO_ROOT/docs/OPERATOR_GUIDE.md and $REPO_ROOT/benchmark/PROTOCOL.md, and foll
 Drive the route to the end. Stop when an advance returns route_end or the client reports that
 the daemon closed the connection. Then reply with a short account of the drive.
 EOF
+if [ "$VLA" = on ]; then
+    cat >> "$DRIVER_WS/prompt.txt" <<EOF
+
+This session has the learned driving policy on: the \`drive\` command (OPERATOR_GUIDE.md §7a) is
+your primary driving primitive. You tell it what you see and what to do, in its phrasebook; it
+steers and controls speed between your decisions.
+EOF
+fi
 cp "$DRIVER_WS/prompt.txt" "$DRIVER_WS/settings.json" "$SESSION_DIR/"
 # --setting-sources "" is load-bearing for isolation, not just a settings.json switch: it also stops
 # CLAUDE.md / memory being loaded, from the sandbox AND from ~/.claude. Verified -- with the flag a
@@ -169,7 +209,7 @@ fi
 # ---- 4. driver -----------------------------------------------------------------------------------
 cat > "$SESSION_DIR/driver.json" <<EOF
 {"model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
- "autocompact": "$AUTOCOMPACT",
+ "driver": "claude", "vla": "${VLA:-off}", "autocompact": "$AUTOCOMPACT",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}
 EOF

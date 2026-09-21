@@ -76,6 +76,11 @@ HELP: Dict[str, str] = {
     "apply_plan waypoints ticks [target_speed] [stop_on_collision]":
         "track ego-frame [[fwd,left],...] (>=2 pts, plan_interval_s apart) for ticks",
     "set_control steer throttle brake ticks [stop_on_collision]": "raw control for ticks",
+    "drive text ticks [mode] [stop_on_collision]":
+        "let the learned policy (config vla) drive for ticks, told `text` -- a sentence in its "
+        "phrasebook (docs/OPERATOR_GUIDE.md §7). mode = commentary (default: a description of the "
+        "scene and what to do) | instruction (an order it obeys) | safety (an order it may refuse) | "
+        "plain (no text: the policy alone). The reply carries what it did",
     "hold [ticks]": "brake; with ticks, also advance",
     "record on [every]": "toggle camera frame logging to camera_log/ (for tools/make_video.py)",
     "shutdown": "abort the route (scored as an agent failure)",
@@ -85,7 +90,8 @@ HELP: Dict[str, str] = {
 _PRIVILEGED_EVENTS = ("collision", "infraction")
 # Commands that decide what the ego does. With require_justification they must carry why="...", and
 # every accepted one is logged to decisions.jsonl / decisions.txt with its outcome.
-_DRIVING_COMMANDS = ("apply_plan", "set_control", "hold", "tick", "run_until_frame", "run_until_event", "shutdown")
+_DRIVING_COMMANDS = ("apply_plan", "set_control", "drive", "hold", "tick", "run_until_frame", "run_until_event", "shutdown")
+_VLA_MODES = ("plain", "commentary", "command", "instruction", "safety", "cot")
 _ADVANCE_EVENTS = ("stopped", "plan_done") + _PRIVILEGED_EVENTS
 
 
@@ -172,6 +178,16 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._truth_step = float(cfg["route_truth"]["step_m"])
         self._truth_reach = float(cfg["route_truth"]["reach_m"])
         self._require_why = bool(cfg["require_justification"])
+        self._vla_enabled = bool(cfg["vla"]["enabled"])
+        self._vla_addr = str(cfg["vla"]["addr"])
+        self._vla_cam = str(cfg["vla"]["camera"])
+        self._vla_every = int(cfg["vla"]["every_n_ticks"])
+        self._vla_control = str(cfg["vla"]["control"])
+        self._vla_tp_at = [float(d) for d in cfg["vla"]["target_points_at_m"]]
+        self._vla_max_ticks = int(cfg["vla"]["max_ticks"])
+        assert self._vla_control in ("simlingo", "probe_pid"), f"vla.control must be simlingo|probe_pid, got {self._vla_control!r}"
+        assert self._vla_every >= 1 and len(self._vla_tp_at) == 2
+        assert any(c["id"] == self._vla_cam for c in self._cameras), f"vla.camera {self._vla_cam!r} is not in cameras"
         self.pid = PIDController(cfg["pid"])
         # The route's tick budget, for `status.ticks_left` only. AGENT_MAX_TICKS is the analysis
         # override the leaderboard itself reads (docs/DESIGN.md); PROBE_TICK_BUDGET is the stock
@@ -195,6 +211,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._plan_done = False
         self._raw = {"steer": 0.0, "throttle": 0.0, "brake": 1.0}
         self._last_control = {"steer": 0.0, "throttle": 0.0, "brake": 1.0}
+        self._vla: Optional[Dict[str, Any]] = None       # the running `drive`: text, mode, last reply
+        self._vla_ready = False                          # /reset sent once per route
         self._advance: Optional[Dict[str, Any]] = None
         self._collisions: List[Dict[str, Any]] = []
         self._collision_sensor = None
@@ -215,6 +233,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._decisions_txt = open(self._out / "decisions.txt", "a")
         # Analysis only, both access levels: never read back into a reply (see _record_score_events).
         self._score_log = open(self._out / "score_events.jsonl", "a")
+        # Every policy query with its full reply, for reviewing what the driver's words did.
+        self._vla_log = open(self._out / "vla.jsonl", "a") if self._vla_enabled else None
         host = os.environ.get("PROBE_HOST", str(cfg["host"]))
         port = int(os.environ.get("PROBE_PORT", cfg["port"]))
         self._server = CommandServer(host, port)
@@ -302,7 +322,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
                 pass
             self._collision_sensor = None
         for f in (getattr(self, "_cmd_log", None), getattr(self, "_traj_log", None), getattr(self, "_decisions_jsonl", None),
-                  getattr(self, "_decisions_txt", None), getattr(self, "_score_log", None)):
+                  getattr(self, "_decisions_txt", None), getattr(self, "_score_log", None), getattr(self, "_vla_log", None)):
             if f is not None:
                 f.close()
         if server is not None:
@@ -412,6 +432,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         a = self._advance
         assert a is not None
         result: Dict[str, Any] = {"reason": reason, "ticks_advanced": a["ticks"]}
+        if self._mode == "vla":
+            result["vla"] = self._vla_summary()
         if not self._sensors_only:
             score = self._live_score(detail=True)
             result["collisions_during"] = self._collisions[a["coll0"]:]
@@ -500,6 +522,21 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             self._mode = "plan"
             self._start_advance("ticks", cmd, n=ticks)
             return None
+        if name == "drive":
+            assert self._vla_enabled, "drive: the learned policy is off in this session (config vla.enabled)"
+            mode = str(cmd.get("mode", "commentary"))
+            assert mode in _VLA_MODES, f"drive: mode must be one of {_VLA_MODES}"
+            text = str(cmd.get("text") or "").strip()
+            assert text or mode in ("plain", "cot"), f"drive: mode={mode} needs text"
+            ticks = int(cmd["ticks"])
+            assert 1 <= ticks <= self._vla_max_ticks, f"drive: ticks must be 1..{self._vla_max_ticks} (config vla.max_ticks)"
+            if not self._vla_ready:
+                self._vla_post("/reset", {})   # fails loudly here, before anything moves
+                self._vla_ready = True
+            self._vla = {"text": text, "mode": mode, "last": None, "queries": 0, "ms": 0.0}
+            self._mode, self._plan_world, self._plan_speed, self._plan_done = "vla", None, None, False
+            self._start_advance("ticks", cmd, n=ticks)
+            return None
         if name == "set_control":
             raw = {k: float(cmd[k]) for k in ("steer", "throttle", "brake")}
             ticks = int(cmd["ticks"])
@@ -532,6 +569,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             control.throttle = float(np.clip(self._raw["throttle"], 0.0, 1.0))
             control.brake = float(np.clip(self._raw["brake"], 0.0, 1.0))
             return control
+        if self._mode == "vla":
+            return self._vla_control_tick(control)
         if self._mode != "plan" or self._plan_world is None:
             control.brake = 1.0
             return control
@@ -548,6 +587,78 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         steer, throttle, brake, _meta = self.pid.control(plan_ego[i0:], e["speed"], self._plan_speed, self._plan_interval_s)
         control.steer, control.throttle, control.brake = steer, throttle, brake
         return control
+
+    # ------------------------------------------------------------------ learned policy (`drive`)
+    def _vla_post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        import urllib.request
+        req = urllib.request.Request(f"http://{self._vla_addr}{path}", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                reply = json.loads(r.read())
+        except Exception as e:
+            raise RuntimeError(f"vla service at {self._vla_addr} failed on {path}: {e!r} "
+                               "(is scripts/run_vla_server.sh running?)") from e
+        assert reply.get("ok"), f"vla service error on {path}: {reply.get('error')}"
+        return reply
+
+    def _vla_query(self) -> Dict[str, Any]:
+        """One policy step from what BOTH tracks may see: the vla camera, the speedometer and two
+        points of the route plan (the same plan `nav.route_points_ego` comes from). Nothing here
+        touches hero_actor, the world or the map, so it needs no access branch."""
+        assert self._last_input is not None and self._ego is not None and self._route is not None
+        v = self._vla
+        assert v is not None
+        img = np.ascontiguousarray(self._last_input[self._vla_cam][1][:, :, :3])
+        ok, jpg = cv2.imencode(".jpg", img)
+        assert ok
+        e = self._ego
+        pts = geo.route_points_ahead(self._route, self._route_s, self._vla_tp_at)
+        tps = geo.world_to_ego((e["x"], e["y"]), e["yaw"], pts)
+        import base64
+        t0 = time.time()
+        reply = self._vla_post("/act", {
+            "image_jpeg_b64": base64.b64encode(jpg.tobytes()).decode(), "speed_mps": float(e["speed"]),
+            "target_points": [[float(p[0]), float(p[1])] for p in tps], "text": v["text"], "mode": v["mode"]})
+        v["queries"] += 1
+        v["ms"] += (time.time() - t0) * 1000.0
+        if self._vla_log is not None:
+            self._vla_log.write(json.dumps({"step": self.step, "text": v["text"], "mode": v["mode"],
+                                            "speed_mps": _r(e["speed"]), "target_points": [[_r(p[0]), _r(p[1])] for p in tps],
+                                            **{k: reply[k] for k in ("route", "speed_wps", "desired_speed_mps", "language", "control", "ms")}}) + "\n")
+            self._vla_log.flush()
+        return reply
+
+    def _vla_control_tick(self, control: "carla.VehicleControl") -> "carla.VehicleControl":
+        v = self._vla
+        assert v is not None
+        a = self._advance
+        # Query on the first tick of the advance and every every_n_ticks after; hold in between.
+        if v["last"] is None or (a is not None and a["ticks"] % self._vla_every == 0):
+            v["last"] = self._vla_query()
+            if self._vla_control == "probe_pid":
+                e = self._ego
+                self._plan_world = geo.ego_to_world((e["x"], e["y"]), e["yaw"], np.asarray(v["last"]["route"], dtype=np.float64))
+                self._plan_speed = float(v["last"]["desired_speed_mps"])
+        if self._vla_control == "simlingo":
+            c = v["last"]["control"]
+            control.steer, control.throttle, control.brake = float(c["steer"]), float(c["throttle"]), float(c["brake"])
+            return control
+        e = self._ego
+        plan_ego = geo.world_to_ego((e["x"], e["y"]), e["yaw"], self._plan_world)
+        i0 = min(int(np.argmin(np.linalg.norm(plan_ego, axis=1))), len(plan_ego) - 2)
+        steer, throttle, brake, _meta = self.pid.control(plan_ego[i0:], e["speed"], self._plan_speed, self._plan_interval_s)
+        control.steer, control.throttle, control.brake = steer, throttle, brake
+        return control
+
+    def _vla_summary(self) -> Optional[Dict[str, Any]]:
+        v = self._vla
+        if v is None or v["last"] is None:
+            return None
+        last = v["last"]
+        return {"text": v["text"], "mode": v["mode"], "language": last["language"],
+                "desired_speed_mps": last["desired_speed_mps"], "queries": v["queries"],
+                "ms_per_query": _r(v["ms"] / max(v["queries"], 1), 0)}
 
     # ------------------------------------------------------------------ route + score
     def _update_route_progress(self) -> None:
@@ -705,6 +816,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             "route": route,
             "stopped_run_ticks": self._stopped_run,
         }
+        if self._mode == "vla":
+            status["vla"] = self._vla_summary()
         if not self._sensors_only:
             hero = self.hero_actor
             status["speed_limit_mps"] = _r(hero.get_speed_limit() / 3.6, 1) if hero is not None else None
@@ -772,7 +885,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         what a sensors session sees. Keep it that way: anything added here must be routed through a
         builder that already branches on `_sensors_only`, never read off `hero_actor` or the world.
         """
-        cams = cmd.get("cams", self._percept_cams)
+        # With the learned policy on, the driver sees exactly the policy's camera and nothing else:
+        # a disagreement between them must be a disagreement about the same image.
+        cams = [self._vla_cam] if self._vla_enabled else cmd.get("cams", self._percept_cams)
         # Image scale is NOT a driver argument: it is the harness's cost/detail control, and a
         # driver-supplied value silently overrode whatever the config asked for, so it could not be
         # varied experimentally at all. Set it in config.yaml; a `scale` in the command is ignored.
