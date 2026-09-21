@@ -14,9 +14,9 @@ leaderboard_evaluator.py  (sync mode, owns the tick loop, scores the route)
    │ run_step() every tick
 ProbeAgent  carla_probe/agent.py
    ├─ CommandServer: JSON lines over TCP, blocks run_step while paused
-   └─ control: hold | plan (PID tracks client waypoints) | raw
-   ▲ TCP
-carla_probe.client (stdlib CLI / REPL / ProbeClient class): Claude or a human
+   └─ control: hold | plan (PID tracks client waypoints) | raw | vla (a learned policy, told a sentence)
+   ▲ TCP                                                          │ HTTP, one query per N ticks
+carla_probe.client (stdlib CLI / REPL / ProbeClient class): Claude or a human   carla_probe/vla_server.py (SimLingo)
 ```
 
 One evaluator process drives one route. The route and scenario are bound at startup.
@@ -134,6 +134,43 @@ Applied to Bench2Drive 0.0.4 by `scripts/setup_bench2drive.sh`. It touches only 
 
 With those variables unset, scoring semantics are stock Bench2Drive.
 
+## The learned policy (`drive`)
+
+`vla_server.py` serves the stock SimLingo checkpoint (the backbone of BLUE, `third_party/BLUE`)
+over HTTP: one front JPEG, the speed, two route points and a sentence in; a 20-point path, a
+10-point speed profile, the model's own control and its language out. It runs in its own
+interpreter (`third_party/vla_venv`, Python 3.8 + torch; `scripts/setup_vla.sh`) because the
+daemon's environment is stdlib-only, and on its own GPU. The daemon's `drive` command puts the
+agent in mode `vla`: every `vla.every_n_ticks` it posts the current tick to the service and applies
+the reply's control (`vla.control: simlingo`) or tracks the reply's path with its own PID
+(`probe_pid`). What it sends is Bench2Drive-eligible on both tracks -- a camera, the speedometer
+and the same route plan `nav.route_points_ego` comes from -- so `_vla_query` has no access branch
+and `test_drive_learned_policy` runs it against a fake service at both levels, with the sensors
+leak check on its reply.
+
+The point is the sentence. SimLingo was trained on three prompt shapes (`simlingo_training/
+dataloader/dataset_driving.py`, `dataset_dreamer.py`): its own commentary generated before the
+action, **a commentary given to it** (`... {commentary} Predict the waypoints.`), and **an
+instruction** (`<INSTRUCTION_FOLLOWING> ... {instruction}`, with a `<SAFETY>` variant that may
+refuse). The service exposes each as a `mode` and, for the modes whose answer is fixed, writes the
+answer into the sequence and takes one forward pass -- the training-time sequence -- instead of
+generating it token by token (SimLingo's `greedy_sample` has no KV cache, so even `Waypoints:` cost
+four full forwards). BLUE's gate, which decides per frame whether the model should generate its
+own commentary, is not used: here language is always present and never the model's own.
+
+Frames: SimLingo's vehicle frame is `[forward, right]` (CARLA's); the wire format is the daemon's
+`[forward, left]`, flipped in the service in one place, both ways. Verified on a captured
+left-turn scene: the returned path bends the way the dense route does.
+
+While the policy is enabled, `percept` writes only `vla.camera`: driver and policy reason from
+the same image, so a disagreement between them is about the scene, not the view. `CAM_FRONT` is
+mounted where SimLingo's camera was (`x -1.5, z 2.0`, 1024x512, fov 110) for the same reason.
+
+Baselines share the harness: `DRIVER=baseline_vla` (the policy told nothing, `mode=plain`) and
+`DRIVER=baseline_route` (the sparse route handed to `apply_plan` at constant speed, blind) in
+`run_eval.sh`, via `carla_probe/baseline_driver.py`. A language-supervised run is measured
+against the first; any driver is measured against the second.
+
 ## The vendored Fail2Drive tree (`third_party/fail2drive/`)
 
 Fail2Drive is MIT, so unlike Bench2Drive it is **vendored rather than fetched and patched**: the
@@ -207,6 +244,10 @@ worth revisiting; it would be a deviation to record next to any result.
 - **Replay weather.** CARLA's recorder does not store weather; `replay_sim.py` applies the route's
   start weather, so routes whose weather changes along the way replay with the start weather.
 - **No authentication** on the socket. Bind to localhost unless the network is trusted.
+- **The policy's speed.** ~150 ms a query in fp16 on an RTX 2080 Ti (Turing has no flash-attn
+  and no bf16 tensor cores; fp16 is what the checkpoint was trained in), so `every_n_ticks: 2`
+  runs the sim at about a third of real time. `mode=cot`, where the model writes its own
+  commentary, is 1.5–2 s a query and exists for analysis, not driving.
 
 ## Provenance
 

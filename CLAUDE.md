@@ -20,6 +20,10 @@ or after changing `agent.py`, `config.yaml` or the patch), evals, and recording.
   `geometry.py`, `pid.py`, `bev.py`, `server.py` and `client.py` do not, and are unit-tested in
   `tests/` (`pytest`, no simulator).
 - Keep `client.py` pure stdlib.
+- `carla_probe/vla_server.py` (the learned policy behind `drive`) runs in ITS OWN interpreter,
+  `third_party/vla_venv` (Python 3.8 + torch; `scripts/setup_vla.sh`), never in the daemon's. The
+  daemon talks to it over HTTP with stdlib only. Its outputs are Bench2Drive-eligible on both
+  tracks; `test_drive_learned_policy` runs it against a fake service at both levels.
 - The driver is `claude -p`, launched by `run_eval.sh`, so runs are billed to whatever the `claude`
   CLI is logged in to — normally a Claude subscription. A bespoke Messages-API driver existed
   briefly (`carla_probe/drive_loop.py`, removed 2026-09-14) and is recoverable from git history:

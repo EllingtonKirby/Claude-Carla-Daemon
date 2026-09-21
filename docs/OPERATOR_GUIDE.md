@@ -51,7 +51,7 @@ Every reply carries `status`. An advancing command replies once, when the sim pa
 `result.reason` and `ticks_advanced` (privileged sessions add `collisions_during` and
 `new_infractions`). Items marked \* are privileged-only.
 
-**Every driving command** (`apply_plan`, `set_control`, `hold`, `tick`, `run_until_frame`,
+**Every driving command** (`apply_plan`, `set_control`, `drive`, `hold`, `tick`, `run_until_frame`,
 `run_until_event`, `shutdown`) **must include `why="..."`**: what you observed and why this command
 follows from it, in a sentence or two. A command without one is refused (`ok: false`) and changes
 nothing. Each accepted command is logged with its justification and outcome, so decisions can be
@@ -68,6 +68,7 @@ reviewed against the scene after the run. Write the reason you actually acted on
 | `dump_frame` | | state.json + cameras + bev.png into `frames/frame_<step>/` |
 | `apply_plan` | `waypoints` `ticks` `target_speed?` `stop_on_collision?`\* | **primary driving primitive**: PID-track ego-frame waypoints for `ticks` |
 | `set_control` | `steer` `throttle` `brake` `ticks` `stop_on_collision?`\* | raw control (steer + = right) |
+| `drive` | `text` `ticks` `mode?` `stop_on_collision?`\* | **when the session has the learned policy on (§7a):** tell the policy what you see and what to do; it drives for `ticks`. Refused otherwise |
 | `hold` | `ticks?` | brake; with `ticks`, also advance |
 | `tick` | `n` `stop_on_collision?`\* | advance in the current mode |
 | `run_until_frame` | `frame` | advance until `step >= frame` |
@@ -199,9 +200,9 @@ outlive the burst.
 - **The scene exists only in the cameras** — which is why §6's look-every-decision rule is not
   advice here but the whole of your perception.
 - **Distances from images.** The JPGs may be written at a reduced resolution, so work from the image
-  you actually opened rather than from a fixed pixel count. `CAM_FRONT` has a 100° horizontal FOV,
-  which makes its focal length ≈ 0.42 × the image width W in pixels. An object of real height H
-  metres spanning h pixels is then ≈ 0.42·W·H/h metres away. A car is about 1.5 m tall and 1.8 m
+  you actually opened rather than from a fixed pixel count. `CAM_FRONT` has a 110° horizontal FOV,
+  which makes its focal length ≈ 0.35 × the image width W in pixels. An object of real height H
+  metres spanning h pixels is then ≈ 0.35·W·H/h metres away. A car is about 1.5 m tall and 1.8 m
   wide, and a lane about 3.5 m wide.
 - **Closing speed** comes from the change in distance between two frames a known number of ticks
   apart. Compare frames before committing to a gap.
@@ -215,6 +216,52 @@ outlive the burst.
 - **Traffic lights and stop signs**: find them on camera, and stop at the stop line on your side of
   the junction.
 
+## 8a. Driving with `drive`: the learned policy
+
+Some sessions run with a learned driving policy (SimLingo, a vision-language-action model). Its
+`status` shows `vla` while it is in charge, and `help` lists `drive`; when the policy is off,
+`drive` is refused and nothing else changes. With it on, **`percept` returns `CAM_FRONT` only**:
+the policy sees exactly that camera, and you must reason from the same image it does.
+
+The policy gets one front image, your speed, two points of the route, and **your sentence**. It
+then steers and controls speed at every tick for `ticks`, on its own perception, until you speak
+again. So you are the supervisor: you look, you decide what the situation is and what to do, you
+say it, and the policy executes between your decisions, reacting to what happens in between.
+
+- `mode=commentary` (default): **a description of the situation and the action**, in the
+  policy's own phrasebook below. This is what it was trained to say to itself before acting.
+- `mode=instruction`: **an order** it was trained to obey even against the route: a lane change,
+  a speed, a stop, pulling into a parking lane. `mode=safety` is the same order, but the policy may
+  refuse one it considers unsafe (its reply then says so in `language`).
+- `mode=plain`: no text; the policy alone. Use it when you have nothing to add.
+
+**Speak the phrasebook.** The policy was trained on templated sentences; free prose is outside
+its experience. A commentary is two sentences, *manoeuvre* then *speed*:
+
+| manoeuvre | speed |
+|---|---|
+| `Follow the route.` | `Accelerate to drive with the target speed.` |
+| `Turn left.` / `Turn right.` | `Maintain your current speed.` / `Maintain the reduced speed.` |
+| `Prepare to do a lane change.` | `Decelerate to stay behind the car in 12 meters.` |
+| `Stay on your current lane to go around the construction site.` | `Accelerate to follow the car in 20 meters.` |
+| `Stay on your current lane to give way to the emergency vehicle.` | `Remain stopped to stay behind the car.` / `Stop now to stay behind the car.` |
+| `Stay on your current lane to overtake the bikes on your lane.` | `Decelerate because the traffic light is red.` / `Accelerate because the traffic light is green.` |
+| `Steer clear of the parked vehicle.` / `Avoid the accident on your lane.` | `Decelerate to drive through the junction.` / `Accelerate to drive through the junction.` |
+| `Return to your original route after avoiding the obstacle.` | `Wait for a gap in the traffic before changing lanes.` |
+| `Avoid the vehicle that is opening its door.` | `Decelerate due to the pedestrian in 8 meters.` |
+
+`<OBJECT>` is a plain noun (`car`, `truck`, `bike`, `pedestrian`, `traffic light`, `stop sign`),
+`<DISTANCE>` is `N meters`. Instructions are shorter: `Change one lane to the left.`, `Slow down.`,
+`Accelerate.`, `Stop.`, `Drive at 5 m/s.`, `Change to the parking lane on the right.`,
+`Turn left at the next intersection.`
+
+**What it will and will not do for you.** It holds the lane and follows the route by itself, and
+it brakes for what it sees in front. It does *not* see behind or beside you, it does not know the
+scenario, and a sentence telling it to accelerate overrides its own caution: told "Accelerate to
+drive with the target speed" at a red light, it accelerates. Say what is true. Use `ticks` of
+10–40 and look again; the reply's `result.vla` reports what it said back (`language`), the speed
+it chose (`desired_speed_mps`) and how many times it was queried.
+
 ## 9. Hard-won lessons (both tracks)
 
 - **Short bursts near other road users.** Long advances on a stale read are how cars get
@@ -223,7 +270,20 @@ outlive the burst.
 - **Gap acceptance** (unprotected turns, merges): time the gap to each conflicting vehicle, commit
   only when the whole manoeuvre fits, and do not stop halfway across a lane.
 - **Stop signs**: come to a full stop (speed ≈ 0) at the line before proceeding.
-- **Red lights**: stop before the stop line.
+- **Red lights**: stop as close to the stop line as you can **with the signal still in view**.
+  There is a band, and both edges cost you. Too far back and it is unreadable: a signal is a handful
+  of pixels at 30 m and only a few more at 15 m, so pulling up ten metres short of the line is not
+  the cautious choice -- it parks you outside the range at which you can read the one thing you are
+  waiting on, and no amount of re-reading fixes an image that cannot answer the question. Too close
+  and it leaves the frame entirely: `CAM_FRONT` sees about 62 degrees vertically from a 1.7 m mount,
+  so a signal on a mast arm 5 m up drops off the top of the image inside roughly 5 m, and one 6 m up
+  inside about 7 m. If the signal has vanished from the top of the frame you are too close to read
+  it, not looking at a dark lamp -- check a signal head further away, or the cross traffic, rather
+  than trusting your last reading.
+  Between those limits, keep re-reading it: signals change, so a colour you read a while ago is
+  stale, and a lamp you cannot resolve is unknown rather than still-what-it-last-showed. Cross
+  traffic and the cars around you are corroborating evidence -- if the queue beside you moves off
+  and nothing is crossing, your own reading is probably out of date.
 - **Emergency vehicles**: a vehicle with flashing lights behind you has priority, and yielding is
   not finished until it is actually **past you**. It wants the lane you are in, so **get out of that
   lane**: change lane if there is one, or pull clear onto the shoulder. Slow enough to make the move

@@ -32,6 +32,9 @@ Frame 2 at 0.10 seconds
  Positions: 2
   Id: 109 Location: (11365.1, 19324.5, 187.312) Rotation: (0, -1.27475, 179.857)
   Id: 110 Location: (13317.2, 19319.6, 180.0) Rotation: (0, -1.27475, 179.857)
+ State traffic lights: 2
+  Id: 87 state: 0 frozen: 0 elapsedTime: 1.2
+  Id: 88 state: 2 frozen: 0 elapsedTime: 1.2
 """
 
 
@@ -41,8 +44,23 @@ def _parsed():
 
 def test_actor_type_and_role_are_captured():
     actors = _parsed()["actors"]
-    assert actors[109] == {"type": "vehicle.lincoln.mkz_2020", "role": "hero"}
+    assert actors[109]["type"] == "vehicle.lincoln.mkz_2020"
+    assert actors[109]["role"] == "hero"
     assert actors[110]["role"] == "scenario"
+
+
+def test_spawn_position_is_captured_in_metres():
+    """Traffic lights never move, so their only position is the one recorded at creation."""
+    assert _parsed()["actors"][109]["spawn"] == [114.65, 193.25]
+
+
+def test_traffic_light_states_are_captured_per_frame():
+    """CARLA's enum: 0 Red, 1 Yellow, 2 Green. These lines share the `Id:` prefix with actor poses,
+    so the pose regex must not swallow them and vice versa."""
+    f = _parsed()["frames"]
+    assert f[2]["lights"] == {87: 0, 88: 2}
+    assert 1 not in f or "lights" not in f[1]      # no state block in that frame
+    assert set(f[2]["actors"]) == {109, 110}       # light ids did not leak into actor poses
 
 
 def test_positions_are_metres():

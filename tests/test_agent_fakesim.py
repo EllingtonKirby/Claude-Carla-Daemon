@@ -29,7 +29,7 @@ _STUBBED = ("carla", "leaderboard", "leaderboard.autoagents", "leaderboard.autoa
             "srunner", "srunner.scenariomanager", "srunner.scenariomanager.carla_data_provider", "carla_probe.agent",
             "leaderboard.utils", "leaderboard.utils.statistics_manager", "srunner.scenariomanager.traffic_events")
 GEO_REF = (1.5, 2.5)
-_DRIVING = ("apply_plan", "set_control", "hold", "tick", "run_until_frame", "run_until_event", "shutdown")  # a non-zero town geo reference, to exercise the solver
+_DRIVING = ("apply_plan", "set_control", "drive", "hold", "tick", "run_until_frame", "run_until_event", "shutdown")  # a non-zero town geo reference, to exercise the solver
 
 
 # ----------------------------------------------------------------------------- fake world
@@ -241,11 +241,12 @@ def make_session(tmp_path, monkeypatch):
     saved = {k: sys.modules.get(k) for k in _STUBBED}
     opened = []
 
-    def _make(access, gnss_noise=0.0, hero_extent=None, **cfg_overrides):
+    def _make(access, gnss_noise=0.0, hero_extent=None, vla_addr=None, **cfg_overrides):
         """``gnss_noise`` (m, per axis, seeded) makes the fake GNSS behave like the leaderboard's,
         which is the only way to tell the position filters apart: with a clean fix they all return
         the truth. ``cfg_overrides`` sets top-level config keys. ``hero_extent`` is
         ``(extent_x, extent_y, bbox_offset_x)`` for the ego's bounding box, for the footprint check.
+        ``vla_addr`` enables the learned policy (config `vla`) against a fake service.
         """
         # The real Bench2Drive hero, measured off the blueprint: a Lincoln MKZ 2020. Using its
         # actual box means config's `ego:` is exercised against the vehicle it claims to describe.
@@ -288,6 +289,8 @@ def make_session(tmp_path, monkeypatch):
         cfg.update(cfg_overrides)
         for cam in cfg["cameras"]:
             cam["width"], cam["height"] = 64, 32
+        if vla_addr is not None:
+            cfg["vla"]["enabled"], cfg["vla"]["addr"] = True, vla_addr
         cfg_path = tmp_path / "config.yaml"
         cfg_path.write_text(yaml.safe_dump(cfg))
         with socket.socket() as s:
@@ -413,6 +416,14 @@ def test_privileged_session(make_session):
     assert "file" in _bev, _bev
     assert Path(_bev["file"]).is_file()
     dump = c.call("dump_frame")["dump"]
+    # route_truth: the dense route ahead in the ego frame -- the label a route-perception score
+    # needs, and deliberately NOT part of the driving view the sparse nav points give.
+    truth = c.call("get_state")["state"]["route_truth"]
+    cfg = yaml.safe_load((REPO / "carla_probe" / "config.yaml").read_text())["route_truth"]
+    assert len(truth) == int(cfg["reach_m"] / cfg["step_m"])
+    assert truth[0][0] == pytest.approx(cfg["step_m"], abs=0.5)   # first sample one step ahead
+    assert truth[-1][0] > truth[0][0]                             # ordered by distance ahead
+
     assert Path(dump["state"]).is_file() and Path(dump["bev"]).is_file() and len(dump["cameras"]) == 4
     # percept is the ONLY view: observe and get_camera are gone, so there is one way to see.
     assert c.call("get_camera", cams=["CAM_FRONT"])["ok"] is False
@@ -493,7 +504,7 @@ def test_privileged_session(make_session):
 
 # ----------------------------------------------------------------------------- sensors only
 _PRIVILEGED_WORDS = ("actors", "traffic_lights", "stop_signs", "lane", "parked", "speed_limit", "score",
-                     "collision", "infraction", "loc", "rot", "velocity")
+                     "collision", "infraction", "loc", "rot", "velocity", "route_truth")
 
 
 def _keys(obj):
@@ -550,7 +561,10 @@ def test_sensors_session(make_session):
     assert body["corners_ego"] == [[2.44, 0.92], [2.44, -0.92], [-2.45, -0.92], [-2.45, 0.92]]
     assert [cam["id"] for cam in body["cameras"]] == [
         "CAM_FRONT", "CAM_FRONT_LEFT", "CAM_FRONT_RIGHT", "CAM_BACK"]
-    assert body["cameras"][0] == {"id": "CAM_FRONT", "x": 0.8, "y": 0.0, "yaw_deg": 0.0, "fov_deg": 100}
+    # The mount comes from config (CAM_FRONT sits where the learned policy's camera was trained).
+    front = yaml.safe_load((REPO / "carla_probe" / "config.yaml").read_text())["cameras"][0]
+    assert body["cameras"][0] == {"id": "CAM_FRONT", "x": front["x"], "y": front["y"],
+                                  "yaw_deg": front["yaw"], "fov_deg": front["fov"]}
     assert "ORIGIN" in obs["legend"] and "2.44" in obs["legend"]
 
     # clearance is from the BODYWORK. A point 3 m from the origin is 0.56 m from the bumper, and
@@ -594,6 +608,9 @@ def test_sensors_session(make_session):
     assert "file" in _bev, _bev
     assert Path(_bev["file"]).is_file()
     dump = c.call("dump_frame")["dump"]
+    # The dense plan does not exist on this track, so the label is absent rather than approximated.
+    assert "route_truth" not in c.call("get_state")["state"]
+
     assert "ego_status" in Path(dump["state"]).read_text()
     assert c.call("run_until_event", event="plan_done", max_ticks=400)["result"]["reason"] == "plan_done"
 
@@ -706,3 +723,84 @@ def test_clearance_reads_the_plan_in_flight_when_none_is_given(make_session):
     cl = s.c.call("clearance", points=[[3.5, -1.4]])["clearance"]
     assert cl["plan"] == "in_flight"
     assert cl["points"][0]["along_plan"]["min_m"] < 0.0
+
+
+# ----------------------------------------------------------------------------- learned policy (`drive`)
+@pytest.fixture
+def fake_vla():
+    """A stand-in for carla_probe/vla_server.py: records every request, answers a straight route."""
+    import base64
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, body))
+            if self.path == "/act":
+                img = cv2.imdecode(np.frombuffer(base64.b64decode(body["image_jpeg_b64"]), np.uint8), cv2.IMREAD_COLOR)
+                reply = {"ok": True, "route": [[0.6 * i, 0.0] for i in range(1, 21)],
+                         "speed_wps": [[0.5 * i, 0.0] for i in range(1, 11)], "desired_speed_mps": 4.0,
+                         "language": f"echo: {body.get('text')}", "prompt": "", "ms": 1.0,
+                         "control": {"steer": 0.0, "throttle": 0.6, "brake": 0.0}, "image_hw": list(img.shape[:2])}
+            else:
+                reply = {"ok": True}
+            data = json.dumps(reply).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *a):
+            pass
+
+    httpd = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield types.SimpleNamespace(addr=f"127.0.0.1:{httpd.server_port}", requests=requests)
+    httpd.shutdown()
+
+
+@pytest.mark.parametrize("access", ["privileged", "sensors"])
+def test_drive_learned_policy(make_session, fake_vla, access):
+    s = make_session(access, vla_addr=fake_vla.addr)
+    c, hero = s.c, s.hero
+
+    # A driving command: justified, and only in a mode that makes sense.
+    assert c.call("drive", text="Follow the route.", ticks=5, why=None)["ok"] is False
+    assert "needs text" in c.call("drive", mode="instruction", ticks=5)["error"]
+    assert "1..200" in c.call("drive", text="x", ticks=500)["error"]
+
+    # With the policy on, the driver sees exactly the policy's camera, at both entry points.
+    assert c.call("percept")["files"] == ["CAM_FRONT.jpg"]
+
+    r = c.call("drive", text="Follow the route. Accelerate to drive with the target speed.", ticks=10)
+    assert r["ok"] and r["result"]["reason"] == "ticks" and r["result"]["ticks_advanced"] == 10
+    assert r["status"]["mode"] == "vla"
+    v = r["result"]["vla"]
+    assert v["queries"] == 5                      # every_n_ticks 2: ticks 0, 2, 4, 6, 8
+    assert v["language"].startswith("echo: Follow the route.") and v["desired_speed_mps"] == 4.0
+    assert hero.tf.location.y > 0.3 and abs(hero.tf.location.x) < 0.1   # its throttle moved the car
+    # Reset once per route, then only queries: each from the sensors alone.
+    assert [p for p, _ in fake_vla.requests][:2] == ["/reset", "/act"]
+    acts = [b for p, b in fake_vla.requests if p == "/act"]
+    assert len(acts) == 5
+    q = acts[0]
+    assert q["mode"] == "commentary" and q["text"].startswith("Follow the route.")
+    assert set(q) == {"image_jpeg_b64", "speed_mps", "target_points", "text", "mode"}
+    # The route runs straight ahead (+y, the ego's heading): the two points are dead ahead.
+    assert q["target_points"] == [[pytest.approx(10.0, abs=0.05), pytest.approx(0.0, abs=0.05)],
+                                  [pytest.approx(20.0, abs=0.05), pytest.approx(0.0, abs=0.05)]]
+    if access == "sensors":
+        leaked = [k for k in _keys(r) if any(k.startswith(w) for w in _PRIVILEGED_WORDS)]
+        assert not leaked, leaked
+
+    # Ticking on keeps the policy in charge (the count runs over the whole `drive` episode);
+    # `hold` takes it away.
+    r = c.call("tick", n=4)
+    assert r["status"]["mode"] == "vla" and r["result"]["vla"]["queries"] == 7
+    assert c.call("hold")["status"]["mode"] == "hold"
+    # Every query is on record, for reviewing what the words did.
+    rows = [json.loads(l) for l in (s.out / "vla.jsonl").read_text().splitlines()]
+    assert len(rows) == 7 and rows[0]["language"].startswith("echo:") and len(rows[0]["route"]) == 20
+    _finish(s)

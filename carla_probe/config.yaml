@@ -136,6 +136,15 @@ bev:
   lane_step_m: 2.0
   lane_max_nodes: 6000
 
+# route_truth: the dense route ahead in the ego frame, in `get_state` on the PRIVILEGED track only.
+# Not a driving input -- it is the label for scoring whether a driver saw the road's geometry, which
+# the sparse nav.route_points_ego it actually reasons from cannot tell you. Sampled every step_m out
+# to reach_m. The sensors track has no dense route at all (only the downsampled GPS plan), so the
+# field is absent there rather than approximated.
+route_truth:
+  step_m: 2.0
+  reach_m: 40.0
+
 # percept: the driver's only view of the sim -- the access-appropriate driving state plus JPGs for the
 # current tick. It is the only command that returns camera images: `cams` and `scale` are the
 # defaults when the command does not name its own; percept=true on a driving command attaches the
@@ -155,6 +164,43 @@ percept:
   # when to look is part of what the sensors track measures. Turn it on only to take that decision
   # away deliberately.
   on_advance: false
+
+# vla: a learned driving policy (SimLingo, served by carla_probe/vla_server.py; scripts/setup_vla.sh)
+# that turns the driver's SENTENCE into motion at every tick -- the `drive` command. The driver
+# supervises in language; the policy closes the loop between the driver's decisions. Both tracks:
+# the policy sees only one camera, the speedometer and two route points, all Bench2Drive-eligible.
+vla:
+  # `drive` is refused when off, and the camera restriction below is not applied.
+  enabled: false
+  addr: 127.0.0.1:8791
+  # The ONE camera the policy sees. While enabled, percept writes ONLY this camera too: driver and
+  # policy must reason from the same image, or a difference between them is a difference in views.
+  camera: CAM_FRONT
+  # Query the policy every N ticks and hold its control in between (a query is ~150 ms on a
+  # 2080 Ti). 1 = every tick, as SimLingo's own agent runs.
+  every_n_ticks: 2
+  # Who turns the policy's route + speed profile into pedals: `simlingo`, its own controllers,
+  # run inside the service (the paper's numbers); `probe_pid`, this daemon's plan tracker (pid:).
+  control: simlingo
+  # The two route points handed to the policy, as arclengths ahead (m). SimLingo's planner hands
+  # it the next two sparse route NODES beyond 7.5 m; fixed distances in that range are the closest
+  # analogue on an interpolated route.
+  target_points_at_m: [10.0, 20.0]
+  # Cap on the ticks one `drive` may run: the driver must come back and look.
+  max_ticks: 200
+
+# blue_oracle: BLUE's stock agent with the LLM as its commentary module (carla_probe/
+# blue_oracle_agent.py, run by scripts/run_blue_eval.sh AGENT=oracle). Read by that agent, not the
+# daemon. When BLUE's gate fires, the model's commentary is replaced by `model`'s sentence about
+# the same frame, re-encoded with SimLingo's tokenizer and embeddings.
+blue_oracle:
+  model: claude-opus-5
+  # Reuse the last sentence when the gate fires again within this many frames (0 = ask every time;
+  # the gate tends to fire on runs of consecutive frames, ~20 Hz).
+  reuse_frames: 0
+  timeout_s: 180.0
+  # Also generate what SimLingo would have said, for the log (and as the fallback).
+  log_native: true
 
 record:
   trajectory: true            # per-tick pose + control to trajectory.jsonl (cheap)
@@ -179,8 +225,10 @@ ego:
 # RGB cameras. CARLA vehicle frame: x forward, y RIGHT, z up (m); yaw in degrees, + = to the right.
 # The leaderboard rejects mounts more than 3 m from the vehicle origin and more than 8 cameras.
 # Every camera renders every tick, so fewer / smaller cameras = a faster simulation.
+# CAM_FRONT is SimLingo's mount (x -1.5, z 2.0, 1024x512, fov 110): the vla policy was trained on
+# exactly this view and the driver sees the same image, so keep them identical.
 cameras:
-  - {id: CAM_FRONT,       x: 0.8,  y: 0.0,  z: 1.7, roll: 0.0, pitch: 0.0, yaw: 0.0,   width: 1024, height: 512, fov: 100}
+  - {id: CAM_FRONT,       x: -1.5, y: 0.0,  z: 2.0, roll: 0.0, pitch: 0.0, yaw: 0.0,   width: 1024, height: 512, fov: 110}
   - {id: CAM_FRONT_LEFT,  x: 0.5,  y: -0.5, z: 1.7, roll: 0.0, pitch: 0.0, yaw: -60.0, width: 800,  height: 450, fov: 90}
   - {id: CAM_FRONT_RIGHT, x: 0.5,  y: 0.5,  z: 1.7, roll: 0.0, pitch: 0.0, yaw: 60.0,  width: 800,  height: 450, fov: 90}
   - {id: CAM_BACK,        x: -1.5, y: 0.0,  z: 1.7, roll: 0.0, pitch: 0.0, yaw: 180.0, width: 800,  height: 450, fov: 110}
