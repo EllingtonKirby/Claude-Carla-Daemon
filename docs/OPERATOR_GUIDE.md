@@ -9,6 +9,8 @@ purpose: discover each scenario from live state.
   (1 tick = 0.05 s).
 - The sim is **frozen whenever no time-advancing command is pending**, so deliberation is free.
 - A route has a hard budget of **4000 ticks (200 s driven)**; `status.ticks_left` counts down.
+  (Where `ticks_left` comes back `null` the benchmark has no tick cap and the route ends on its own
+  timeout; drive as if the budget applied anyway.)
   The leaderboard also fails the route if the ego is **blocked for 60 s**, **deviates from the
   route** by more than 30 m, or trips a scenario timeout.
 - You are the only driver. At launch the ego is in `hold` mode (braking) and stays there until you

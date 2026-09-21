@@ -2,8 +2,9 @@
 # Run one benchmark eval: a probe session driven by an isolated, headless Claude Code driver.
 # See docs/HANDOFF.md §4 for the rules and §5 for what gets recorded.
 #
-#   bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> [SESSION_DIR]
+#   bash scripts/run_eval.sh <ROUTE> <sensors|privileged> <MODEL> [SESSION_DIR]
 #   bash scripts/run_eval.sh 2091 sensors claude-opus-5
+#   BENCHMARK=fail2drive bash scripts/run_eval.sh Base_Animals_0075 sensors claude-opus-5
 #
 # Blocks until the route is scored (run it in the background). Steps:
 #   1. launch scripts/run_session.sh and wait until the route is loaded and paused;
@@ -18,7 +19,10 @@
 # normally a Claude subscription, in which case the reported total_cost_usd is an API-equivalent
 # figure rather than a bill.
 #
-# Env: GPU_RANK (0)  CARLA_PORT (20000)  PROBE_PORT (8790): stride CARLA_PORT by >= 10 per parallel run
+# Env: BENCHMARK (bench2drive | fail2drive): which benchmark to score on. The two are not
+#        comparable -- different routes, CARLA build, route budget and success rule. Fail2Drive is
+#        scored in PAIRS (tools/f2d_score.py); one route on its own is not an F2D result.
+#      GPU_RANK (0)  CARLA_PORT (20000)  PROBE_PORT (8790): stride CARLA_PORT by >= 10 per parallel run
 #      LOAD_TIMEOUT_S (900)  ISOLATION_CHECK (1; 0 skips step 3)  CHECK_MODEL (haiku)
 #      AUTOCOMPACT (auto): Claude Code's auto-compact window, `auto` or 100k-1M. A THRESHOLD, not a
 #           cadence: it fires when the window reaches that size, so 100k is the tightest cap
@@ -49,7 +53,13 @@ case "$DRIVER" in
 esac
 export VLA
 
-if [ -z "${LEADERBOARD_ROOT:-}" ]; then
+export BENCHMARK="${BENCHMARK:-bench2drive}"
+case "$BENCHMARK" in
+    bench2drive) LEADERBOARD_NAME="Bench2Drive" ;;
+    fail2drive)  LEADERBOARD_NAME="Fail2Drive" ;;
+    *) echo "ERROR: BENCHMARK must be bench2drive or fail2drive" >&2; exit 1 ;;
+esac
+if [ -z "${LEADERBOARD_ROOT:-}" ] || [ "${PROBE_BENCHMARK_ACTIVE:-}" != "$BENCHMARK" ]; then
     # shellcheck disable=SC1091
     source "$REPO_ROOT/scripts/env.sh"
 fi
@@ -69,7 +79,7 @@ mkdir -p "$SESSION_DIR"
 PY="$REPO_ROOT/.venv/bin/python"
 ADDR="127.0.0.1:$PROBE_PORT"
 
-echo "=== eval: route $ROUTE, track $TRACK, model $MODEL, driver $DRIVER${VLA:+, vla $VLA}"
+echo "=== eval: $BENCHMARK route $ROUTE, track $TRACK, model $MODEL, driver $DRIVER${VLA:+, vla $VLA}"
 echo "    session: $SESSION_DIR"
 if [ "$VLA" = on ]; then
     VLA_ADDR="$(sed -n '/^vla:/,/^[a-z]/p' "$REPO_ROOT/carla_probe/config.yaml" | awk '/addr:/{print $2}')"
@@ -100,7 +110,7 @@ DRIVER_WS="$(mktemp -d "${TMPDIR:-/tmp}/probe_driver.XXXXXX")"
 if [ "$DRIVER" != claude ]; then
     # A scripted baseline: no sandbox, no isolation check, no prompt. Same session, same scoring.
     cat > "$SESSION_DIR/driver.json" <<EOF
-{"model": "$MODEL", "driver": "$DRIVER", "vla": "${VLA:-off}", "track": "$TRACK", "route": "$ROUTE",
+{"model": "$MODEL", "driver": "$DRIVER", "vla": "${VLA:-off}", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "started": "$(date -Iseconds)"}
 EOF
     echo "    baseline driver running ($DRIVER; log: $SESSION_DIR/driver_stdout.log)"
@@ -121,13 +131,14 @@ cat > "$DRIVER_WS/settings.json" <<EOF
               "Read(/$REPO_ROOT/docs/OPERATOR_GUIDE.md)",
               "Read(/$REPO_ROOT/benchmark/PROTOCOL.md)",
               "Read(/$REPO_ROOT/.claude/skills/drive-carla/SKILL.md)"],
-    "deny": ["Read(/$SESSION_DIR/*.*)", "Read(/$REPO_ROOT/routes/**)", "Read(/$REPO_ROOT/third_party/**)"]
+    "deny": ["Read(/$SESSION_DIR/*.*)", "Read(/$REPO_ROOT/routes/**)", "Read(/$REPO_ROOT/third_party/**)",
+             "Read(/$REPO_ROOT/benchmark/FAIL2DRIVE.md)"]
   }
 }
 EOF
 # The canonical driver prompt. Changing it makes results non-comparable: note it next to results.
 cat > "$DRIVER_WS/prompt.txt" <<EOF
-You are the driver in a CARLA Bench2Drive benchmark run on the $TRACK track. A probe session for
+You are the driver in a CARLA $LEADERBOARD_NAME benchmark run on the $TRACK track. A probe session for
 one route is already running and paused, waiting for your commands.
 
 Send commands only as: $PY -m carla_probe.client CMD key=value ...
@@ -197,7 +208,7 @@ fi
 
 # ---- 4. driver -----------------------------------------------------------------------------------
 cat > "$SESSION_DIR/driver.json" <<EOF
-{"model": "$MODEL", "claude_code": "$(claude --version)", "track": "$TRACK", "route": "$ROUTE",
+{"model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "driver": "claude", "vla": "${VLA:-off}", "autocompact": "$AUTOCOMPACT",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}

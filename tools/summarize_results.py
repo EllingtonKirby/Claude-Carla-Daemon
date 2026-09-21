@@ -7,13 +7,18 @@
 Per session directory it reads:
   result.json     leaderboard scoring: DS (score_composed), RC (score_route), IS (score_penalty),
                   status and infractions. Written by the evaluator when the route ends.
-  session.json    launch metadata, including the access level (privileged | sensors).
+  session.json    launch metadata, including the benchmark (bench2drive | fail2drive) and the
+                  access level (privileged | sensors).
   commands.jsonl  the daemon's command log: how many decisions the driver made and wall-clock time.
 
 Sessions without a scored record (killed or crashed before scoring) are reported with DS 0 and
 status "no result", so they count against the mean instead of silently disappearing. Means are
-reported per access level: privileged and sensors-only results are different benchmarks.
-Stdlib only.
+reported per benchmark and access level, never pooled across either: privileged and sensors-only
+are different benchmarks, and so are Bench2Drive and Fail2Drive (different routes, route budgets
+and success rules).
+
+A Fail2Drive run is scored in Base/Generalization pairs, and the mean DS over a mixed bag of its
+routes is not its headline number -- use tools/f2d_score.py for that. Stdlib only.
 """
 
 from __future__ import annotations
@@ -54,18 +59,21 @@ def _command_stats(path: Path) -> Dict[str, Any]:
     }
 
 
-def _access(session: Path) -> str:
+def _meta(session: Path) -> Dict[str, str]:
     meta = session / "session.json"
     if meta.is_file():
         try:
-            return str(json.loads(meta.read_text()).get("access") or "unknown")
+            d = json.loads(meta.read_text())
+            return {"benchmark": str(d.get("benchmark") or "bench2drive"),
+                    "access": str(d.get("access") or "unknown")}
         except json.JSONDecodeError:
             pass
-    return "unknown"
+    # Sessions launched before the benchmark selector existed are all Bench2Drive.
+    return {"benchmark": "bench2drive", "access": "unknown"}
 
 
 def summarize(session: Path) -> List[Dict[str, Any]]:
-    base = {"session": session.name, "access": _access(session), **_command_stats(session / "commands.jsonl")}
+    base = {"session": session.name, **_meta(session), **_command_stats(session / "commands.jsonl")}
     result = session / "result.json"
     records = []
     if result.is_file():
@@ -114,23 +122,28 @@ def main() -> int:
     if not rows:
         print("no session directories found", file=sys.stderr)
         return 1
-    means = {acc: _means([r for r in rows if r["access"] == acc]) for acc in sorted({r["access"] for r in rows})}
+    groups = sorted({(r["benchmark"], r["access"]) for r in rows})
+    means = {f"{b}/{a}": _means([r for r in rows if (r["benchmark"], r["access"]) == (b, a)])
+             for b, a in groups}
     if args.json:
-        print(json.dumps({"routes": rows, "mean_by_access": means}, indent=2))
+        print(json.dumps({"routes": rows, "mean_by_benchmark_access": means}, indent=2))
         return 0
 
-    print("| session | access | route | town | status | DS | RC | IS | infractions | cmds | wall s |")
-    print("|---|---|---|---|---|---:|---:|---:|---|---:|---:|")
+    print("| session | benchmark | access | route | town | status | DS | RC | IS | infractions | cmds | wall s |")
+    print("|---|---|---|---|---|---|---:|---:|---:|---|---:|---:|")
     for r in rows:
         inf = ", ".join(f"{k}={v}" for k, v in r["infractions"].items()) or "-"
         is_str = "-" if r["IS"] is None else f"{r['IS']:.3f}"
         cmds = "-" if r["commands"] is None else r["commands"]
         wall = "-" if r["wall_s"] is None else r["wall_s"]
-        print(f"| {r['session']} | {r['access']} | {r['route_id'] or '-'} | {r['town'] or '-'} | {r['status']} | "
-              f"{r['DS']:.2f} | {r['RC']:.2f} | {is_str} | {inf} | {cmds} | {wall} |")
+        print(f"| {r['session']} | {r['benchmark']} | {r['access']} | {r['route_id'] or '-'} | {r['town'] or '-'} | "
+              f"{r['status']} | {r['DS']:.2f} | {r['RC']:.2f} | {is_str} | {inf} | {cmds} | {wall} |")
     print()
-    for acc, m in means.items():
-        print(f"**{acc}: mean over {m['n']} route(s):** DS {m['DS']} · RC {m['RC']} · IS {m['IS']}")
+    for key, m in means.items():
+        print(f"**{key}: mean over {m['n']} route(s):** DS {m['DS']} · RC {m['RC']} · IS {m['IS']}")
+    if any(b == "fail2drive" for b, _ in groups):
+        print("\nFail2Drive is scored in Base/Generalization pairs: "
+              "`python tools/f2d_score.py <sessions>` for the drop.")
     return 0
 
 
