@@ -133,7 +133,20 @@ reviewed against the scene after the run. Write the reason you actually acted on
 - **Gap acceptance** (unprotected turns, merges): time the gap to each conflicting vehicle, commit
   only when the whole manoeuvre fits, and do not stop halfway across a lane.
 - **Stop signs**: come to a full stop (speed ≈ 0) at the line before proceeding.
-- **Red lights**: stop before the stop line.
+- **Red lights**: stop as close to the stop line as you can **with the signal still in view**.
+  There is a band, and both edges cost you. Too far back and it is unreadable: a signal is a handful
+  of pixels at 30 m and only a few more at 15 m, so pulling up ten metres short of the line is not
+  the cautious choice -- it parks you outside the range at which you can read the one thing you are
+  waiting on, and no amount of re-reading fixes an image that cannot answer the question. Too close
+  and it leaves the frame entirely: `CAM_FRONT` sees about 62 degrees vertically from a 1.7 m mount,
+  so a signal on a mast arm 5 m up drops off the top of the image inside roughly 5 m, and one 6 m up
+  inside about 7 m. If the signal has vanished from the top of the frame you are too close to read
+  it, not looking at a dark lamp -- check a signal head further away, or the cross traffic, rather
+  than trusting your last reading.
+  Between those limits, keep re-reading it: signals change, so a colour you read a while ago is
+  stale, and a lamp you cannot resolve is unknown rather than still-what-it-last-showed. Cross
+  traffic and the cars around you are corroborating evidence -- if the queue beside you moves off
+  and nothing is crossing, your own reading is probably out of date.
 - **Emergency vehicles**: a vehicle with flashing lights behind you has priority, and yielding is
   not finished until it is actually **past you**. It wants the lane you are in, so **get out of that
   lane**: change lane if there is one, or pull clear onto the shoulder. Slow enough to make the move
@@ -157,6 +170,11 @@ reviewed against the scene after the run. Write the reason you actually acted on
 - **Use all the cameras.** A percept writes a JPG from every one, and the side and rear views show
   things the front simply cannot. Opening an image costs tokens and it stays in your context, but
   driving on a partial view costs more than the tokens save.
+- **Look at least once a second.** You are blind between decisions: nothing is rendered to you while
+  a driving command runs, so a 60-tick advance is three seconds in which the world changes and you
+  do not see it. Keep `ticks` at or under 20 (one second) whenever anything is happening -- traffic
+  near you, a junction, a signal, a manoeuvre in progress -- and spend longer advances only on empty
+  road you have just looked at. A stale look is the most expensive thing you can act on.
 - **Check `CAM_BACK` at least once a second**, which means on essentially every decision. A vehicle
   closing on you, an emergency vehicle, traffic you are about to pull in front of: none of it
   appears in `CAM_FRONT`, in the route, or in the ego sensors. Something following you gives you no

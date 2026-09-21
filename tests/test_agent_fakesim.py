@@ -395,6 +395,14 @@ def test_privileged_session(make_session):
 
     assert Path(c.call("render_bev")["file"]).is_file()
     dump = c.call("dump_frame")["dump"]
+    # route_truth: the dense route ahead in the ego frame -- the label a route-perception score
+    # needs, and deliberately NOT part of the driving view the sparse nav points give.
+    truth = c.call("get_state")["state"]["route_truth"]
+    cfg = yaml.safe_load((REPO / "carla_probe" / "config.yaml").read_text())["route_truth"]
+    assert len(truth) == int(cfg["reach_m"] / cfg["step_m"])
+    assert truth[0][0] == pytest.approx(cfg["step_m"], abs=0.5)   # first sample one step ahead
+    assert truth[-1][0] > truth[0][0]                             # ordered by distance ahead
+
     assert Path(dump["state"]).is_file() and Path(dump["bev"]).is_file() and len(dump["cameras"]) == 4
     # percept is the ONLY view: observe and get_camera are gone, so there is one way to see.
     assert c.call("get_camera", cams=["CAM_FRONT"])["ok"] is False
@@ -475,7 +483,7 @@ def test_privileged_session(make_session):
 
 # ----------------------------------------------------------------------------- sensors only
 _PRIVILEGED_WORDS = ("actors", "traffic_lights", "stop_signs", "lane", "parked", "speed_limit", "score",
-                     "collision", "infraction", "loc", "rot", "velocity")
+                     "collision", "infraction", "loc", "rot", "velocity", "route_truth")
 
 
 def _keys(obj):
@@ -544,6 +552,9 @@ def test_sensors_session(make_session):
 
     assert Path(c.call("render_bev")["file"]).is_file()
     dump = c.call("dump_frame")["dump"]
+    # The dense plan does not exist on this track, so the label is absent rather than approximated.
+    assert "route_truth" not in c.call("get_state")["state"]
+
     assert "ego_status" in Path(dump["state"]).read_text()
     assert c.call("run_until_event", event="plan_done", max_ticks=400)["result"]["reason"] == "plan_done"
 

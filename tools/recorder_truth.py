@@ -10,6 +10,9 @@ Writes ``SESSION_DIR/recorder_truth.json``:
      "actors": {"<id>": {"type": "vehicle.ford.ambulance", "role": "scenario"}}}
 
 Positions are metres in the CARLA world frame (the recorder reports centimetres) and yaw is degrees.
+``frames[f]["lights"]`` maps a traffic light's actor id to its state that frame (CARLA's enum:
+0 Red, 1 Yellow, 2 Green, 3 Off, 4 Unknown); lights do not move, so their position is the ``spawn``
+recorded against the actor rather than a per-frame pose.
 Two traps the recorder text sets, both of which silently produce confident nonsense:
 ``Rotation`` is printed ``(roll, pitch, yaw)``, so yaw is the THIRD field -- reading the second
 gives the pitch and every bearing comes out 180 deg wrong on a road running toward -x. And an actor
@@ -48,7 +51,9 @@ _FRAME = re.compile(r"^Frame (\d+) at ([\d.]+) seconds")
 # recorded yaw must match its direction of travel (see `_check_yaw`).
 _POS = re.compile(r"^\s+Id: (\d+) Location: \(([-\d.e+]+), ([-\d.e+]+), ([-\d.e+]+)\) "
                   r"Rotation: \([-\d.e+]+, [-\d.e+]+, ([-\d.e+]+)\)")
-_CREATE = re.compile(r"^\s+Create (\d+): ([\w.]+) \(\d+\) at ")
+_CREATE = re.compile(r"^\s+Create (\d+): ([\w.]+) \(\d+\) at \(([-\d.e+]+), ([-\d.e+]+), ([-\d.e+]+)\)")
+# Per-frame traffic light state. CARLA's enum: 0 Red, 1 Yellow, 2 Green, 3 Off, 4 Unknown.
+_LIGHT = re.compile(r"^\s+Id: (\d+) state: (\d+) frozen: \d+ elapsedTime: ")
 _ATTR = re.compile(r"^\s+(\w+) = (.+)$")
 
 
@@ -75,10 +80,16 @@ def parse_dump(text: str) -> dict:
                                                       round(float(m.group(5)), 2),
                                                       round(float(m.group(4)) / 100.0, 2)]
             continue
+        m = _LIGHT.match(line)
+        if m and cur is not None:
+            frames[cur].setdefault("lights", {})[int(m.group(1))] = int(m.group(2))
+            continue
         m = _CREATE.match(line)
         if m:
             last_created = int(m.group(1))
-            actors.setdefault(last_created, {"type": m.group(2), "role": None})
+            actors.setdefault(last_created, {"type": m.group(2), "role": None,
+                                             "spawn": [round(float(m.group(3)) / 100.0, 2),
+                                                       round(float(m.group(4)) / 100.0, 2)]})
             continue
         m = _ATTR.match(line)
         if m and last_created is not None and m.group(1) == "role_name":

@@ -169,6 +169,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._percept_cams = list(cfg["percept"]["cams"])
         self._percept_scale = float(cfg["percept"]["scale"])
         self._percept_on_advance = bool(cfg["percept"]["on_advance"])
+        self._truth_step = float(cfg["route_truth"]["step_m"])
+        self._truth_reach = float(cfg["route_truth"]["reach_m"])
         self._require_why = bool(cfg["require_justification"])
         self.pid = PIDController(cfg["pid"])
         # The route's tick budget, for `status.ticks_left` only. AGENT_MAX_TICKS is the analysis
@@ -998,7 +1000,28 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             ],
             "collisions": self._collisions[-5:],
             "score": self._live_score(detail=False),
+            "route_truth": self._route_truth(),
         }
+
+    def _route_truth(self) -> Optional[List[List[float]]]:
+        """The DENSE route ahead in the ego frame, sampled every `route_truth.step_m` out to
+        `reach_m`: [[fwd, left], ...].
+
+        Privileged only, and deliberately not part of the driving view -- it exists to LABEL what
+        the road actually does, so a run can be scored on whether it saw the geometry. The sparse
+        `nav.route_points_ego` is what a driver reasons from on either track; this is the answer
+        sheet. `_build_route` already keeps the dense plan when privileged (the sensors track only
+        ever has the downsampled GPS one), so there is nothing to compute beyond resampling it.
+        """
+        if self._sensors_only or self._route is None or self._route_cum is None:
+            return None
+        e = self._ego
+        assert e is not None
+        n = int(self._truth_reach / self._truth_step)
+        dists = [self._truth_step * (i + 1) for i in range(n)]
+        pts = geo.route_points_ahead(self._route, self._route_s, dists)
+        pts_ego = geo.world_to_ego((e["x"], e["y"]), e["yaw"], pts)
+        return [[_r(float(p[0]), 2), _r(float(p[1]), 2)] for p in pts_ego]
 
     def _observe(self, k: int) -> Dict[str, Any]:
         """The compact per-decision view: everything needed for the next plan, nothing else."""
