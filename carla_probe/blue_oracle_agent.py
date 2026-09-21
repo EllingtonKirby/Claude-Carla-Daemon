@@ -109,8 +109,10 @@ class OracleLingoAgent(agent_simlingo.LingoAgent):
         (self._oracle_ws / "settings.json").write_text(json.dumps({
             "sandbox": {"enabled": False},
             # Claude Code's path rules take an absolute path as "//abs/path" (run_eval.sh does the same).
+            # Only the frames are allowed; with --permission-mode dontAsk everything else is denied,
+            # and an explicit deny on the session dir would also catch the frames (deny wins).
             "permissions": {"allow": [f"Read(/{self._oracle_dir}/oracle_frames/**)"],
-                            "deny": [f"Read(/{_REPO}/**)", f"Read(/{self._oracle_dir}/*.*)"]}}))
+                            "deny": [f"Read(/{_REPO}/carla_probe/**)", f"Read(/{_REPO}/docs/**)"]}}))
         self._oracle_last: Optional[Dict[str, Any]] = None
         self._oracle_cost = 0.0
         lm = self.model.language_model
