@@ -152,6 +152,38 @@ apply_plan waypoints=[...] target_speed=6 ticks=20 percept=true why="..."
   **`status.plan_done: true` means the plan ran out before the burst did** — the ego spent the rest
   of it braking, so the plan was too short (§7).
 
+## 6a. The five questions: how to choose the speed
+
+Your `target_speed` is not a judgment call; it is the answer to five questions, asked in this
+order on every decision, from the percept you just opened. **Write the answers at the start of
+`why=`** as `Q1:n Q2:y Q3:n Q4:n Q5:n`, then your reasoning. The answers are how your decisions
+are reviewed afterwards, so answer what you actually see.
+
+- **Q1 - Slow zone.** Am I on an urban street and in, or within ~30 m of, an intersection?
+  Yes: cap `target_speed` at **7 m/s**.
+- **Q2 - Follow.** Is there a vehicle or a cyclist *ahead in my lane, going my way*, close enough
+  (< 4 m + 0.25 x my speed, plus your estimation margin) or slow enough that I should ease off to
+  hold the gap? Parked, broken-down or blocking vehicles are not followed; they are Q5.
+  Yes: `target_speed` = its speed, or lower until the gap is safe.
+- **Q3 - Stop line.** Does a red or amber light for *my* lane (§9), or a stop sign I have not yet
+  stopped at, require me to stop at a line ahead? Yes: plan to the line with `target_speed=0`.
+  A stop sign is done only after >= 1.5 s below 0.1 m/s within 3 m of the line; you keep that
+  memory across looks, nothing does it for you.
+- **Q4 - Path conflict.** If I keep driving my route at the intended speed for the next 2 s, will
+  I hit or come close to *anything*: a crossing, merging, oncoming or pulling-out car, an opening
+  door, a pedestrian or a crossing cyclist (including one moving toward my path further ahead), a
+  cone or debris? A car in the lane I am merging into counts. Yes: **stop now** (`target_speed=0`,
+  or `hold`). `clearance` on your plan (§5) turns the distances you estimate into body clearances.
+- **Q5 - Overtake.** Is my lane blocked by a stationary obstacle, and is the oncoming lane clear
+  for ~64 m? Yes: commit -- `target_speed` up to **11 m/s**, Q1-Q3 no longer apply, **Q4 still
+  applies on every decision** until you are back in your lane. Blocked but not clear: wait behind it.
+
+**Combine:** Q5 -> overtake unless Q4 · else Q4 or Q3 -> stop · else Q2 -> follow · else Q1 ->
+<= 7 m/s · else the speed limit (a posted sign; otherwise 10 m/s).
+
+**Then decide how long before you look again.** Any yes to Q2-Q4 means `ticks <= 20`; only an
+all-no answer licenses a long burst.
+
 ## 7. Driving with `apply_plan`
 
 `waypoints = [[fwd, left], ...]`, at least 2 points, in the CURRENT ego frame. The plan is pinned to
