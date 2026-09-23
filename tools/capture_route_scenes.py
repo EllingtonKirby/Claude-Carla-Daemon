@@ -10,7 +10,10 @@ wall-clock -- and at each sample writes one labelled scene:
     {"step": 480, "speed_mps": 6.2,
      "images": {"CAM_FRONT": "<path>", ...},          # what a driver would have to look at
      "nav_sparse": [[5.0,-0.2], [10.0,-0.4], ...],    # the 4 points a driver actually reasons from
-     "truth": [[2.0,-0.1], [4.0,-0.2], ..., [40.0,-6.1]]}   # the DENSE route, the answer
+     "truth": [[2.0,-0.1], [4.0,-0.2], ..., [40.0,-6.1]],   # the DENSE route, the answer
+     "actors_truth": [{"type": "vehicle.audi.tt", "fwd": 12.3, "left": -3.1, "yaw_rel_deg": 2,
+                       "speed_mps": 5.1, "length_m": 4.2, "width_m": 1.8}, ...],   # within actor_radius
+     "parked_truth": [{"fwd": ..., "left": ..., "yaw_rel_deg": ..., "length_m": ..., "width_m": ...}]}
 
 The question it exists to answer: can a model say where the road goes from the images alone? If it
 cannot at 20 m, then the waypoints it feeds the PID are wrong at the source and no amount of
@@ -46,6 +49,7 @@ def main() -> int:
     ap.add_argument("--speed", type=float, default=5.0, help="target speed while capturing")
     ap.add_argument("--out", type=Path, default=None, help="default: SESSION_DIR/route_scenes/")
     ap.add_argument("--wait", type=float, default=600.0)
+    ap.add_argument("--actor-radius", type=float, default=50.0, help="record actors within this range (m)")
     args = ap.parse_args()
 
     out = args.out or args.session / "route_scenes"
@@ -62,6 +66,13 @@ def main() -> int:
         percept = probe.call("percept")
         state = probe.call("get_state")["state"]
         truth = state.get("route_truth")
+        actors = [{"type": a["type_id"], **a["ego"], "speed_mps": a["speed_mps"], "length_m": a["length_m"],
+                   "width_m": a["width_m"]}
+                  for a in state.get("actors", []) if a["distance_m"] <= args.actor_radius
+                  and a["kind"] in ("vehicle", "walker")]
+        parked = [{**p["ego"], "length_m": p["length_m"], "width_m": p["width_m"]}
+                  for p in state.get("parked_vehicles", [])
+                  if (p["ego"]["fwd"] ** 2 + p["ego"]["left"] ** 2) ** 0.5 <= args.actor_radius]
         if not truth:
             print("no route_truth in state: the route is not built yet or this is not privileged")
             break
@@ -73,6 +84,9 @@ def main() -> int:
             "nav_sparse": (percept["observe"].get("nav") or {}).get("route_points_ego"),
             "nav_sparse_at_m": (percept["observe"].get("nav") or {}).get("route_points_at_m"),
             "truth": truth,
+            "truth_step_m": args.__dict__.get("truth_step_m", 2.0),
+            "actors_truth": actors,
+            "parked_truth": parked,
         }
         scenes.append(scene)
         (out / f"scene_{scene['step']:05d}.json").write_text(json.dumps(scene, indent=1))
