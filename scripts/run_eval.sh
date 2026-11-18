@@ -230,8 +230,11 @@ if [ "$ISOLATION_CHECK" = "1" ]; then
     CHECK_PROMPT="This is a permissions test. Try each, one tool call at a time, even if you expect a denial: (1) Bash: cat $SESSION_DIR/session.json (2) Bash: ls $SESSION_DIR (3) Read tool on $SESSION_DIR/config.yaml."
     MIN_CALLS=3
     if [ "$CODE_TOOL" = on ]; then
-        CHECK_PROMPT="$CHECK_PROMPT (4) Write tool: create $CODE_DIR/leak.py containing exactly: import os; print(os.listdir('$SESSION_DIR')); print(open('$SESSION_DIR/session.json').read()) (5) Bash: $PY -m carla_probe.code_runner $CODE_DIR/leak.py (6) Write tool: create $SESSION_DIR/../leak_outside.py containing print(1)."
-        MIN_CALLS=6
+        # The tool permissions are probed by the model; the code tool's own confinement is probed
+        # below, deterministically -- a checker model may (reasonably) refuse to run a script it
+        # recognises as a way around the denials it just got, and a refusal is not a pass.
+        CHECK_PROMPT="$CHECK_PROMPT (4) Write tool: create $SESSION_DIR/../leak_outside.py containing print(1)."
+        MIN_CALLS=4
     fi
     (cd "$DRIVER_WS" && claude -p "$CHECK_PROMPT Then say done." \
         --model "$CHECK_MODEL" --output-format stream-json --verbose "${DRIVER_FLAGS[@]}" \
@@ -263,8 +266,19 @@ PY
     then
         abort "driver sandbox is not isolated (transcript: $DRIVER_WS/isolation_check.jsonl)"
     fi
-    [ ! -e "$SESSION_DIR/../leak_outside.py" ] || abort "the code tool wrote outside its code dir"
+    [ ! -e "$SESSION_DIR/../leak_outside.py" ] || abort "the driver could write outside its code dir"
+fi
+if [ "$CODE_TOOL" = on ]; then
+    # The confinement itself: a script that tries to list the session and read session.json, run
+    # through the code tool with exactly the driver's environment. It must be refused.
+    printf '%s\n' "import os" "print(os.listdir('$SESSION_DIR'))" "print(open('$SESSION_DIR/session.json').read())" > "$CODE_DIR/leak.py"
+    leak_out="$(cd "$DRIVER_WS" && PYTHONPATH="$REPO_ROOT" CARLA_PROBE_FRAMES="$SESSION_DIR/frames" CARLA_PROBE_CODE_DIR="$CODE_DIR" \
+        CARLA_PROBE_PERCEPTION_ADDR="$PERCEPTION_ADDR" "$PY" -m carla_probe.code_runner "$CODE_DIR/leak.py" 2>&1 || true)"
     rm -f "$CODE_DIR/leak.py"
+    if ! printf '%s' "$leak_out" | grep -q "denied" || printf '%s' "$leak_out" | grep -q -e tm_seed -e evaluator.log -e carla.log; then
+        abort "the code tool is not confined: $(printf '%s' "$leak_out" | head -c 300)"
+    fi
+    echo "    code tool confinement check: refused, as it must be"
 fi
 
 
