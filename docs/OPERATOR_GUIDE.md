@@ -319,6 +319,8 @@ about its own half-length. A script can do the geometry exactly.
   lateral offset `x = (u − cx) · z / fx` (right positive). Rotate by the mount yaw and add the mount
   position to get the vehicle frame, then flip y to get the probe's ego `left`. The contact point
   of a car with the road is the bottom of its body in the image, which is what this projects.
+- **Your own car is in the frame**: the bottom rows of `CAM_FRONT` and `CAM_BACK` show the ego's
+  bonnet and boot. Anything a script finds there is you.
 - **Measure to bodies.** Ego-frame distances are to your origin; your bumper is `ego_body.front_m`
   ahead of it (§5.1), and `clearance points=...` does that subtraction for you.
 - Build up a small library across the drive (`lib.py` imported by short scripts) rather than
@@ -358,6 +360,11 @@ On `access: dense` each percept also writes, per camera:
 
 These are exact, but they are pixels, not a scene list: finding the nearest car in your path is
 still your script's job. They start from the second tick of the route.
+
+**Your own car is in the pictures.** The ego's bonnet fills the bottom of `CAM_FRONT` and its boot
+the bottom of `CAM_BACK`, segmented as a car (one instance id, the same in every camera, at a
+depth of 1-2 m). Exclude that instance before looking for the nearest vehicle; the same applies to
+a perception model's masks (§8c), which will report it as a car a few metres away.
 
 ## 9. Hard-won lessons (both tracks)
 
