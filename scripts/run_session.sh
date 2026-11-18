@@ -19,7 +19,7 @@
 # Env: BENCHMARK (bench2drive | fail2drive) selects the leaderboard, the CARLA build and where
 #        routes are resolved from. The two are different benchmarks with different route budgets
 #        and different success rules: never pool their scores (benchmark/PROTOCOL.md).
-#      ACCESS (privileged | sensors; default = the config's `access`)
+#      ACCESS (privileged | sensors | dense; default = the config's `access`)
 #      CARLA_ROOT ($HOME/carla)  F2D_CARLA_ROOT ($HOME/f2d_carla)
 #      GPU_RANK (0)  CARLA_PORT (20000)  TM_PORT (CARLA_PORT+20000)
 #      TM_SEED (0)  PROBE_CONFIG (carla_probe/config.yaml)  PROBE_PORT / PROBE_HOST (from config)
@@ -92,8 +92,8 @@ mkdir -p "$SESSION_DIR"
 cp "$PROBE_CONFIG" "$SESSION_DIR/config.yaml"
 if [ -n "${ACCESS:-}" ]; then
     case "$ACCESS" in
-        privileged | sensors) sed -i -E "s/^access:.*/access: $ACCESS/" "$SESSION_DIR/config.yaml" ;;
-        *) echo "ERROR: ACCESS must be privileged or sensors, got '$ACCESS'" >&2; exit 1 ;;
+        privileged | sensors | dense) sed -i -E "s/^access:.*/access: $ACCESS/" "$SESSION_DIR/config.yaml" ;;
+        *) echo "ERROR: ACCESS must be privileged, sensors or dense, got '$ACCESS'" >&2; exit 1 ;;
     esac
 fi
 if [ -n "${VLA:-}" ]; then
@@ -110,6 +110,15 @@ fi
 : "${SIM_RECORD:=1}"
 RECORD_ARGS=()
 [ "$SIM_RECORD" = "1" ] && RECORD_ARGS=(--record="$SESSION_DIR")
+# CODE_FULL_RES=1 (run_eval.sh CODE_TOOL=on): also write native-resolution frames for the driver's scripts
+# GT_DENSE=1: on a privileged session, also write GT depth + instance arrays (scene capture for
+# tools/teach_perception.py). The dense track turns them on by itself.
+if [ "${GT_DENSE:-0}" = 1 ]; then
+    sed -i -E "/^gt_dense:/,/^[a-z]/ s/^  enabled:.*/  enabled: true/" "$SESSION_DIR/config.yaml"
+fi
+if [ "${CODE_FULL_RES:-0}" = 1 ]; then
+    sed -i -E "s/^  full_res_frames:.*/  full_res_frames: true/" "$SESSION_DIR/config.yaml"
+fi
 ACCESS_EFFECTIVE="$(awk '/^access:/{print $2}' "$SESSION_DIR/config.yaml")"
 PROBE_ADDR="${PROBE_HOST:-$(awk '/^host:/{print $2}' "$PROBE_CONFIG")}:${PROBE_PORT:-$(awk '/^port:/{print $2}' "$PROBE_CONFIG")}"
 cat > "$SESSION_DIR/session.json" <<EOF

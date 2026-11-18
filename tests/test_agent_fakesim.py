@@ -804,3 +804,60 @@ def test_drive_learned_policy(make_session, fake_vla, access):
     rows = [json.loads(l) for l in (s.out / "vla.jsonl").read_text().splitlines()]
     assert len(rows) == 7 and rows[0]["language"].startswith("echo:") and len(rows[0]["route"]) == 20
     _finish(s)
+
+
+# ----------------------------------------------------------------------------- dense
+def test_dense_session(make_session, monkeypatch):
+    """dense = the sensors view, exactly, plus GT depth + instance arrays written into the frame dir.
+    Everything sensors refuses, dense refuses; nothing privileged reaches a reply."""
+    import carla_probe.gt_dense as gd
+    started = []
+
+    class FakeRig:
+        def __init__(self, world, hero, cameras, scale):
+            started.append((len(cameras), scale))
+
+        def write(self, out_dir, cams, frame):
+            for cam in cams:
+                np.save(out_dir / f"{cam}_depth.npy", np.zeros((2, 2), np.float16))
+            return [f"{cam}_depth.npy" for cam in cams]
+
+        def destroy(self):
+            pass
+
+    monkeypatch.setattr(gd, "DenseRig", FakeRig)
+    s = make_session("dense")
+    c = s.c
+    st = c.call("status")["status"]
+    assert st["access"] == "dense"
+    assert not {"speed_limit_mps", "collision_contacts", "score"} & set(st)
+
+    first = c.call("percept")
+    assert started == [(4, 0.5)]
+    assert not any(f.endswith("_depth.npy") for f in first["files"]), "the rig spawned this tick has no images yet"
+    for payload in (first["observe"], c.call("get_state")["state"]):
+        leaked = [k for k in _keys(payload) if any(k.startswith(w) for w in _PRIVILEGED_WORDS)]
+        assert not leaked, leaked
+    for bad in ({"cmd": "get_score"}, {"cmd": "run_until_event", "event": "collision"},
+                {"cmd": "tick", "n": 5, "stop_on_collision": True}):
+        name = bad.pop("cmd")
+        resp = c.call(name, **bad)
+        assert resp["ok"] is False and "access=dense" in resp["error"], (name, resp)
+
+    c.call("hold", ticks=1)
+    later = c.call("percept")
+    assert "CAM_FRONT_depth.npy" in later["files"]
+    frames = Path(later["frames_dir"])
+    assert (frames / "CAM_FRONT_depth.npy").is_file()
+    model = json.loads((frames.parent / "cameras.json").read_text())
+    assert set(model["cameras"]["CAM_FRONT"]["intrinsics"]) == {"jpg", "depth_npy", "inst_png"}
+    _finish(s)
+
+
+def test_sensors_session_writes_a_camera_model_but_no_dense_files(make_session):
+    s = make_session("sensors", code={"full_res_frames": True})
+    r = s.c.call("percept")
+    assert "CAM_FRONT_full.jpg" in r["files"] and not any("depth" in f for f in r["files"])
+    model = json.loads((Path(r["frames_dir"]).parent / "cameras.json").read_text())
+    assert set(model["cameras"]["CAM_BACK"]["intrinsics"]) == {"jpg", "full_jpg"}
+    _finish(s)

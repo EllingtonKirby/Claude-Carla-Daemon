@@ -45,6 +45,9 @@ If an advance outlasts your shell timeout, **the daemon finishes it anyway**. Re
 | `render_bev` | navigation map: route, route points, your plan | full scene |
 | refused | `get_score`, `run_until_event collision/infraction`, `stop_on_collision` | nothing |
 
+A third level, **dense**, is the sensors column exactly, plus ground-truth depth and segmentation
+arrays for every camera in each `percept` (§8d). It refuses what sensors refuses.
+
 ## 4. Commands
 
 Every reply carries `status`. An advancing command replies once, when the sim pauses again, with
@@ -293,6 +296,68 @@ scenario, and a sentence telling it to accelerate overrides its own caution: tol
 drive with the target speed" at a red light, it accelerates. Say what is true. Use `ticks` of
 10–40 and look again; the reply's `result.vla` reports what it said back (`language`), the speed
 it chose (`desired_speed_mps`) and how many times it was queried.
+
+## 8b. The code tool
+
+Some sessions give you a code tool (the prompt says so). You write Python files into your code
+dir with Write / Edit, and run one per Bash call with `python -m carla_probe.code_runner FILE.py
+[args]`. A script sees `numpy` and `cv2`, may read the frames a `percept` returns and
+`<frames_dir>/../cameras.json`, and may write only inside your code dir. Everything else is refused
+with `code tool: denied`. It cannot send probe commands: driving stays a decision you make and
+justify. Output is truncated, so print numbers, not arrays.
+
+**What it is for: measuring instead of eyeballing.** Most collisions on this benchmark are not
+missed objects but misjudged margins (§5.1): the driver sees the car and gets the gap wrong by
+about its own half-length. A script can do the geometry exactly.
+
+- **`cameras.json`** gives, per camera, the mount (CARLA vehicle frame: x forward, y RIGHT, z up,
+  yaw + = right) and the pinhole intrinsics of every file a percept writes, keyed by kind
+  (`jpg`, `full_jpg`, `depth_npy`, `inst_png`). Use the intrinsics of the file you load.
+- With the code tool on, each percept also writes **`<cam>_full.jpg`** at native resolution.
+- **Ground plane.** A pixel on the road at row v below the horizon is at forward distance
+  `z ≈ fy · h_cam / (v − cy)` in the camera frame (camera height `h_cam` = mount z, pitch 0), and
+  lateral offset `x = (u − cx) · z / fx` (right positive). Rotate by the mount yaw and add the mount
+  position to get the vehicle frame, then flip y to get the probe's ego `left`. The contact point
+  of a car with the road is the bottom of its body in the image, which is what this projects.
+- **Measure to bodies.** Ego-frame distances are to your origin; your bumper is `ego_body.front_m`
+  ahead of it (§5.1), and `clearance points=...` does that subtraction for you.
+- Build up a small library across the drive (`lib.py` imported by short scripts) rather than
+  rewriting the same projection each time: a script that worked at step 200 is free at step 900.
+- Pausing is free; script run time is not counted against the route. Keep each script under the
+  tool's timeout (120 s).
+
+## 8c. The perception service
+
+When the prompt names a perception service, your scripts may call it -- and no other network
+address. It runs learned models on a camera image, so its answers are estimates, as good as the
+models (Bench2Drive-eligible: they see only your cameras). From a script:
+
+```python
+from carla_probe.perception_client import PerceptionClient
+pc = PerceptionClient()                               # address from the environment
+depth = pc.depth(path)                                # HxW float32, metres along the optical axis
+labels, segments = pc.segment(path, prompts=["car", "pedestrian", "bicycle", "truck"])
+# labels: HxW int32 segment id (0 = none); segments: [{"id", "label", "score", "area", "bbox": [x0,y0,x1,y1]}]
+```
+
+`path` is a frame file a percept returned; outputs are at that image's resolution, so use the
+matching intrinsics. `pc.info()` says which models are loaded and whether `segment` honours free
+`prompts` (an open-vocabulary model) or returns a fixed label set. Monocular metric depth is
+typically good to ~5-10% at 10-30 m and worse far away or on glass; prefer the median over an
+object's mask to any single pixel.
+
+## 8d. Ground-truth arrays (dense track)
+
+On `access: dense` each percept also writes, per camera:
+
+- `<cam>_depth.npy`: float16 HxW, metres along the optical axis (exact).
+- `<cam>_inst.png`: 3-channel uint8. Read with `cv2.imread(p)[..., ::-1]`: channel 0 is the
+  semantic tag (names in `cameras.json` `semantic_tags`: 14 car, 15 truck, 16 bus, 12 pedestrian,
+  18 motorcycle, 19 bicycle, 1 road, 24 road_line, ...), channels 1·256 + 2 an instance id, the
+  same for every pixel of one object.
+
+These are exact, but they are pixels, not a scene list: finding the nearest car in your path is
+still your script's job. They start from the second tick of the route.
 
 ## 9. Hard-won lessons (both tracks)
 

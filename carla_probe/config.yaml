@@ -8,7 +8,9 @@
 #   privileged  ground-truth scene: actors, lanes, traffic lights, stop signs, speed limit, live score
 #   sensors     Bench2Drive SENSORS-track inputs only: cameras, speedometer, IMU, GNSS and the
 #               leaderboard's route plan; ego pose is estimated from GNSS + compass
-# run_session.sh ACCESS=sensors|privileged rewrites this key in the session's config snapshot.
+#   dense       the sensors view, plus ground-truth depth + instance segmentation arrays per camera
+#               (gt_dense below). Not Bench2Drive-eligible: the perfect-pixels upper bound
+# run_session.sh ACCESS=sensors|privileged|dense rewrites this key in the session's config snapshot.
 access: privileged
 
 # Command socket. PROBE_HOST / PROBE_PORT env vars override (run_session.sh forwards them).
@@ -164,6 +166,21 @@ percept:
   # when to look is part of what the sensors track measures. Turn it on only to take that decision
   # away deliberately.
   on_advance: false
+
+# code: what a percept writes for the driver's code tool (run_eval.sh CODE_TOOL=on,
+# carla_probe/code_runner.py). The JPGs above are scaled for the driver's EYES; a script measuring
+# pixels wants every pixel there is. Native-resolution <cam>_full.jpg (quality 95) alongside them.
+# frames/cameras.json (always written) gives the mounts and pinhole intrinsics of every image size.
+code:
+  full_res_frames: false
+
+# gt_dense: ground-truth depth + instance segmentation, cloned from every RGB mount
+# (carla_probe/gt_dense.py). Always on for access: dense (that is what the track IS); opt-in for
+# privileged; never on sensors. NOT Bench2Drive-eligible. Every clone renders every tick, so this
+# doubles the camera load -- `scale` (of the RGB size) keeps it affordable; intrinsics scale with it.
+gt_dense:
+  enabled: false
+  scale: 0.5
 
 # vla: a learned driving policy (SimLingo, served by carla_probe/vla_server.py; scripts/setup_vla.sh)
 # that turns the driver's SENTENCE into motion at every tick -- the `drive` command. The driver

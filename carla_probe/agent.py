@@ -46,10 +46,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from carla_probe import geometry as geo  # noqa: E402
 from carla_probe.bev import box_polygon, lanes_to_polys, render_bev  # noqa: E402
+from carla_probe.gt_dense import DenseRig, camera_model  # noqa: E402
 from carla_probe.pid import PIDController  # noqa: E402
 from carla_probe.server import CommandServer  # noqa: E402
 
-ACCESS_LEVELS = ("privileged", "sensors")
+# dense = the sensors view plus ground-truth depth + instance segmentation arrays (carla_probe/gt_dense.py).
+# Not Bench2Drive-eligible: an upper bound for pixel-level perception, its own result bucket.
+ACCESS_LEVELS = ("privileged", "sensors", "dense")
 _ACTOR_PREFIXES = ("vehicle.", "walker.", "static.")
 # Level (baked-into-the-map) vehicles: invisible to world.get_actors() but solid.
 _PARKED_LABELS = ("Car", "Truck", "Bus", "Motorcycle", "Bicycle")
@@ -161,7 +164,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         # Every knob is read eagerly with cfg["key"]: a missing key fails HERE, not mid-session.
         self._access = str(cfg["access"])
         assert self._access in ACCESS_LEVELS, f"access must be one of {ACCESS_LEVELS}, got {self._access!r}"
-        self._sensors_only = self._access == "sensors"
+        # dense sees exactly what sensors sees through every builder; it only adds the GT arrays.
+        self._sensors_only = self._access in ("sensors", "dense")
         self._out = Path(cfg["output_dir"]).resolve()
         self._out.mkdir(parents=True, exist_ok=True)
         self._state_radius = float(cfg["state_radius_m"])
@@ -198,6 +202,12 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._percept_cams = list(cfg["percept"]["cams"])
         self._percept_scale = float(cfg["percept"]["scale"])
         self._percept_on_advance = bool(cfg["percept"]["on_advance"])
+        self._full_res_frames = bool(cfg["code"]["full_res_frames"])
+        self._gt_dense_scale = float(cfg["gt_dense"]["scale"])
+        # dense REQUIRES the arrays; privileged may opt in; sensors never gets them.
+        self._want_gt_dense = self._access == "dense" or (self._access == "privileged" and bool(cfg["gt_dense"]["enabled"]))
+        self._dense_rig = None
+        self._dense_rig_step = -1
         self._truth_step = float(cfg["route_truth"]["step_m"])
         self._truth_reach = float(cfg["route_truth"]["reach_m"])
         self._require_why = bool(cfg["require_justification"])
@@ -264,6 +274,12 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         host = os.environ.get("PROBE_HOST", str(cfg["host"]))
         port = int(os.environ.get("PROBE_PORT", cfg["port"]))
         self._server = CommandServer(host, port)
+        # The camera model a script needs to turn pixels into metres. The agent's own declared rig, so
+        # Bench2Drive-eligible on every track; it sits in frames/, the one place a driver may read.
+        (self._out / "frames").mkdir(parents=True, exist_ok=True)
+        (self._out / "frames" / "cameras.json").write_text(json.dumps(camera_model(
+            self._cameras, self._percept_scale, self._gt_dense_scale if self._want_gt_dense else 0.0,
+            self._full_res_frames), indent=1))
         print(f"[PROBE] session ready (access={self._access}): the sim pauses on the first tick until a "
               "command arrives", flush=True)
 
@@ -347,6 +363,10 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             except RuntimeError:
                 pass
             self._collision_sensor = None
+        rig = getattr(self, "_dense_rig", None)
+        if rig is not None:
+            rig.destroy()
+            self._dense_rig = None
         for f in (getattr(self, "_cmd_log", None), getattr(self, "_traj_log", None), getattr(self, "_decisions_jsonl", None),
                   getattr(self, "_decisions_txt", None), getattr(self, "_score_log", None), getattr(self, "_vla_log", None)):
             if f is not None:
@@ -373,6 +393,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             self._ego = {"x": float(tf.location.x), "y": float(tf.location.y), "yaw": float(tf.rotation.yaw), "speed": speed}
             self._ensure_collision_sensor()
             self._check_ego_body()
+        if self._want_gt_dense and self._dense_rig is None:
+            self._start_dense_rig()
         self._advance_track_pose(speed)
         self._last_t = self._sim_time
         self._update_route_progress()
@@ -560,7 +582,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         name = str(cmd["cmd"])
         denied = self._denied(name, cmd)
         if denied is not None:
-            return {"ok": False, "error": f"{denied} needs privileged access; this session is access=sensors"}
+            return {"ok": False, "error": f"{denied} needs privileged access; this session is access={self._access}"}
         if name in _DRIVING_COMMANDS and self._require_why and not str(cmd.get("why") or "").strip():
             return {"ok": False, "error": f'{name} needs why="...": what you observed and why this command follows '
                                           "from it (every driving command is logged with its justification)"}
@@ -954,7 +976,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             "lateral_offset_m": _r(self._route_lat, 2),
         }
 
-    def _write_cameras(self, out_dir: Path, cams: Optional[List[str]], scale: float) -> List[str]:
+    def _write_cameras(self, out_dir: Path, cams: Optional[List[str]], scale: float, suffix: str = "") -> List[str]:
         assert self._last_input is not None
         ids = [c["id"] for c in self._cameras]
         cams = list(cams) if cams else ids
@@ -967,10 +989,19 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             img = np.ascontiguousarray(self._last_input[cam][1][:, :, :3])
             if scale != 1.0:
                 img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-            path = out_dir / f"{cam}.jpg"
-            cv2.imwrite(str(path), img)
+            path = out_dir / f"{cam}{suffix}.jpg"
+            cv2.imwrite(str(path), img, [cv2.IMWRITE_JPEG_QUALITY, 95] if suffix else [])
             files.append(str(path.resolve()))
         return files
+
+    def _start_dense_rig(self) -> None:
+        """Spawn the GT depth + instance-seg clones (carla_probe/gt_dense.py). The hero is resolved
+        here only to ATTACH sensors to it; nothing read off it reaches a reply. The clones deliver
+        from the NEXT tick on, so the percept of the tick that spawned them carries no arrays."""
+        if getattr(self, "hero_actor", None) is None:
+            self.get_hero()
+        self._dense_rig = DenseRig(CarlaDataProvider.get_world(), self.hero_actor, self._cameras, self._gt_dense_scale)
+        self._dense_rig_step = self.step
 
     # ------------------------------------------------------------------ the ego's own body
     def _check_ego_body(self) -> None:
@@ -1084,6 +1115,11 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         k = int(cmd.get("k", self._nearest_k))
         out_dir = self._out / "frames" / f"frame_{self.step:05d}"
         files = self._write_cameras(out_dir, cams, scale)
+        names = [Path(f).name for f in files]
+        if self._full_res_frames:
+            names += [Path(f).name for f in self._write_cameras(out_dir, cams, 1.0, suffix="_full")]
+        if self._dense_rig is not None and self.step > self._dense_rig_step:
+            names += self._dense_rig.write(out_dir, cams or [c["id"] for c in self._cameras], self._frame)
         # The directory once, then bare filenames. Absolute paths repeated per camera cost ~115
         # tokens a reply and, on a track where nothing is evicted, are re-read on every later turn;
         # this is ~45. The driver joins dir + name, which its file reader needs anyway because its
@@ -1091,7 +1127,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         out = {
             "observe": self._sensor_observe() if self._sensors_only else self._observe(k),
             "frames_dir": str(out_dir.resolve()),
-            "files": [Path(f).name for f in files],
+            "files": names,
         }
         # Looking IS the moment a clearance belief is formed, so answering it here costs no extra
         # round trip. Same builder, same access guarantees; it reads only driver-supplied points.

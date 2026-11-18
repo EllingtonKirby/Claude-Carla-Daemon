@@ -80,7 +80,12 @@ def main() -> int:
         scene = {
             "step": percept["status"]["step"],
             "speed_mps": percept["status"]["speed_mps"],
-            "images": {Path(n).stem: str(frames_dir / n) for n in percept["files"]},
+            # images: the scaled RGB JPGs a driver opens; files: everything the percept wrote
+            # (full-resolution JPGs, GT depth / instance arrays when the session has them).
+            "images": {Path(n).stem: str(frames_dir / n) for n in percept["files"]
+                       if n.endswith(".jpg") and not n.endswith("_full.jpg")},
+            "files": {Path(n).name: str(frames_dir / n) for n in percept["files"]},
+            "camera_model": str(frames_dir.parent / "cameras.json"),
             "nav_sparse": (percept["observe"].get("nav") or {}).get("route_points_ego"),
             "nav_sparse_at_m": (percept["observe"].get("nav") or {}).get("route_points_at_m"),
             "truth": truth,
