@@ -93,7 +93,10 @@ def load_scenes(dirs: List[Path]) -> List[Dict[str, Any]]:
     for d in dirs:
         for f in sorted(d.glob("scene_*.json")):
             s = json.loads(f.read_text())
-            s["_id"] = f"{d.name}__{f.stem}"
+            # capture_route_scenes.py writes every set into a dir called route_scenes: name the set
+            # after the capture it came from, or ids collide across routes.
+            name = d.parent.name if d.name == "route_scenes" else d.name
+            s["_id"] = f"{name}__{f.stem}"
             scenes.append(s)
     assert scenes, f"no scene_*.json in {dirs}"
     return scenes
