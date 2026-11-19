@@ -42,6 +42,10 @@
 #      CODE_LIB (unset): a directory copied into the driver's code dir as lib/ before the drive --
 #           e.g. a perception library written offline (tools/teach_perception.py). Hashed into
 #           driver.json; the prompt says it is there.
+#      PRIV_EXTRAS (0): 1 = privileged extras (OPERATOR_GUIDE §8e): actor behaviours, the scorer's rules,
+#           the route's scenarios, predict / plan_check. Privileged track only.
+#      PID_LONG / PID_MAX_THROTTLE (config): the plan controller's longitudinal setting; must match a
+#           row of tools/controller_model.json for predict to be honest (pid075 / pid100 / lead)
 #      DRIVER (claude): claude | baseline_vla | baseline_route -- the two baselines need no LLM
 #           (carla_probe/baseline_driver.py) and skip the sandbox; MODEL is then just a label
 set -euo pipefail
@@ -60,6 +64,9 @@ if [ "$CODE_TOOL" = off ] && { [ -n "$PERCEPTION_ADDR" ] || [ -n "$CODE_LIB" ]; 
     echo "ERROR: PERCEPTION_ADDR and CODE_LIB need CODE_TOOL=on" >&2; exit 1
 fi
 [ -z "$CODE_LIB" ] || [ -d "$CODE_LIB" ] || { echo "ERROR: CODE_LIB=$CODE_LIB is not a directory" >&2; exit 1; }
+: "${PRIV_EXTRAS:=0}"
+[ "$PRIV_EXTRAS" = 0 ] || [ "$TRACK" = privileged ] || { echo "ERROR: PRIV_EXTRAS=1 needs the privileged track" >&2; exit 1; }
+export PRIV_EXTRAS PID_LONG PID_MAX_THROTTLE
 : "${DRIVER:=claude}"
 : "${VLA:=}"
 case "$DRIVER" in
@@ -196,6 +203,14 @@ your primary driving primitive. You tell it what you see and what to do, in its 
 steers and controls speed between your decisions.
 EOF
 fi
+if [ "$PRIV_EXTRAS" = 1 ]; then
+    cat >> "$DRIVER_WS/prompt.txt" <<EOF
+
+This session has the privileged extras (OPERATOR_GUIDE.md §8e): every actor's type and how it
+treats you, the scorer's rules with its live state, the scenarios ahead, and the predict and
+plan_check commands for where your own car will go.
+EOF
+fi
 if [ "$CODE_TOOL" = on ]; then
     cat >> "$DRIVER_WS/prompt.txt" <<EOF
 
@@ -288,7 +303,7 @@ fi
 cat > "$SESSION_DIR/driver.json" <<EOF
 {"model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "driver": "claude", "vla": "${VLA:-off}", "autocompact": "$AUTOCOMPACT",
- "code_tool": "$CODE_TOOL", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB",
+ "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB",
  "code_lib_sha256": "$([ -n "$CODE_LIB" ] && (cd "$CODE_LIB" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1))",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}

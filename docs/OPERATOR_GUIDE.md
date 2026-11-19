@@ -366,6 +366,45 @@ the bottom of `CAM_BACK`, segmented as a car (one instance id, the same in every
 depth of 1-2 m). Exclude that instance before looking for the nearest vehicle; the same applies to
 a perception model's masks (§8c), which will report it as a car a few metres away.
 
+## 8e. Privileged extras: who everyone is, the rules, and where your car will go
+
+Some privileged sessions add the following (the prompt says so; `predict` answers only in them).
+
+**Every actor says who it is and how it treats you.** `actors_nearest` entries carry `type`
+(e.g. `vehicle.ford.ambulance`), `role` (`scenario` or `background`), `emergency`, the `scenario`
+it belongs to, its `behaviour` and `reacts_to_you`, read from the running scenario's code. Take
+`reacts_to_you` literally: a flow vehicle "at constant speed" will NOT brake for you, whatever the
+gap looks like; background traffic brakes only for a vehicle ahead of it in its own lane.
+
+**`rules`** gives the scorer's rules with the live state it judges you on:
+- `stop_sign.scorer_state`: `engaged` (you are in a stop's zone) and `satisfied` (the scorer has
+  counted your stop). A stop counts only below 0.1 m/s with your origin within 4 m of the trigger
+  centre: `next_on_route.origin_to_trigger_m` and `inside_counting_radius` tell you whether a stop
+  here would count. Stopping short and creeping through does not.
+- `emergency_vehicle.nearby`: emergency vehicles near you and whether they are in your lane.
+  Yielding means leaving their lane, not slowing in it.
+
+**`scenarios`** lists the scenarios on the route within 150 m: `type`, `task` (what you have to
+do), `trigger_ahead_m`, whether it has `started`, and its `parameters` (flow speeds, spacing, ...).
+
+**Your own car's motion.** The plan controller is measured (tools/controller_model.json): from
+standstill it reaches ~3.8 m/s in 1 s and 9 m/s in ~1.7 s, overshooting the target by 5-20%
+before settling; full braking stops it from 12 m/s in ~1.2 s. It does NOT follow your path exactly:
+the 95th-percentile sideways error is ~0.15 m on a gentle path at 3 m/s, ~0.5 m on a 3.5 m lane
+change over 15 m at 6 m/s, and ~0.8-1.0 m on a tight lane change or a 12-35 m radius curve at
+6-9 m/s. A clearance smaller than that is a coin flip.
+- `predict waypoints=... [target_speed] [ticks]` returns where the ego will be at each tick of
+  that plan -- speed, pose in today's ego frame, and `band_m`, the measured sideways error there.
+  Nothing moves.
+- `plan_check` (same arguments) adds every nearby actor and parked car: the closest body-to-body
+  clearance over the burst with others extrapolated at their current velocity, and `worst_case_m`
+  with your band subtracted. Below 0 means your own tracking error alone could make contact.
+  Others are extrapolated straight: a vehicle that reacts to you will not keep its velocity, one
+  that does not react will.
+
+Use `plan_check` before any plan near another road user, and treat `worst_case_m` as the margin
+you actually have.
+
 ## 9. Hard-won lessons (both tracks)
 
 - **Short bursts near other road users.** Long advances on a stale read are how cars get

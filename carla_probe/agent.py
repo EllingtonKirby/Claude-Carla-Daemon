@@ -47,6 +47,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from carla_probe import geometry as geo  # noqa: E402
 from carla_probe.bev import box_polygon, lanes_to_polys, render_bev  # noqa: E402
 from carla_probe.gt_dense import DenseRig, camera_model  # noqa: E402
+from carla_probe import privileged_extras as px  # noqa: E402
+from carla_probe.motion_model import MotionModel, box_corners, poly_distance  # noqa: E402
 from carla_probe.pid import PIDController  # noqa: E402
 from carla_probe.server import CommandServer  # noqa: E402
 
@@ -79,6 +81,12 @@ HELP: Dict[str, str] = {
         "ego-frame [[fwd,left],...] -- now, and over a path (the one given, else the plan in "
         "flight). Every distance in a reply is to the ego ORIGIN, not the bodywork; this does the "
         "subtraction. Also available as points= on percept, in the same round trip as looking",
+    "predict waypoints [target_speed] [ticks]": "privileged extras: where the ego will be, tick by tick, if it "
+        "runs this plan -- the measured controller model (tools/controller_model.json): speed, pose and a "
+        "sideways uncertainty band_m. Nothing moves",
+    "plan_check* waypoints [target_speed] [ticks]": "privileged extras: predict, plus the closest body-to-body "
+        "clearance to every nearby actor and parked car over the burst (others extrapolated at constant "
+        "velocity) and the worst case once the band is subtracted",
     "render_bev": "top-down PNG (privileged: lanes, actors, lights; sensors: route + plan only)",
     "dump_frame": "state.json + cameras + bev.png into frames/frame_<step>/",
     "apply_plan waypoints ticks [target_speed] [stop_on_collision]":
@@ -192,6 +200,21 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             f"plan_tracking must be 'gnss' or 'dead_reckon', got {self._plan_tracking!r}"
         self._dead_reckon_plan = self._plan_tracking == "dead_reckon" and self._sensors_only
         self._plan_interval_s = float(cfg["plan_interval_s"])
+        # Privileged extras (privileged_extras.py): actor types and behaviours, the scorer's rules, the
+        # route's scenarios, and predict / plan_check. Off unless asked for, so a stock privileged
+        # run stays the run the 2026-11-18 corpus was scored with.
+        self._extras = self._access == "privileged" and bool(cfg["privileged_extras"]["enabled"])
+        self._scenario_lookahead = float(cfg["privileged_extras"]["scenario_lookahead_m"])
+        self._motion: Optional[MotionModel] = None
+        if self._extras:
+            pid_cfg = cfg["pid"]
+            name = ("lead" if str(pid_cfg["long_mode"]).lower() == "lead"
+                    else "pid100" if float(pid_cfg["max_throttle"]) >= 0.99 else "pid075")
+            table = Path(cfg["privileged_extras"]["controller_model"])
+            if not table.is_absolute():
+                table = Path(__file__).resolve().parents[1] / table
+            self._motion = MotionModel.load(table, name, float(pid_cfg["brake_speed"]), float(pid_cfg["brake_ratio"]))
+        self._pred_log = None
         self._bev = {k: cfg["bev"][k] for k in ("forward_m", "back_m", "side_m", "px_per_m", "draw_lanes",
                                                 "lane_step_m", "lane_max_nodes")}
         self._record_traj = bool(cfg["record"]["trajectory"])
@@ -274,6 +297,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         host = os.environ.get("PROBE_HOST", str(cfg["host"]))
         port = int(os.environ.get("PROBE_PORT", cfg["port"]))
         self._server = CommandServer(host, port)
+        if self._extras:
+            # One row per plan: the predicted poses, to be scored against trajectory.jsonl offline.
+            self._pred_log = open(self._out / "predictions.jsonl", "a")
         # The camera model a script needs to turn pixels into metres. The agent's own declared rig, so
         # Bench2Drive-eligible on every track; it sits in frames/, the one place a driver may read.
         (self._out / "frames").mkdir(parents=True, exist_ok=True)
@@ -368,7 +394,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             rig.destroy()
             self._dense_rig = None
         for f in (getattr(self, "_cmd_log", None), getattr(self, "_traj_log", None), getattr(self, "_decisions_jsonl", None),
-                  getattr(self, "_decisions_txt", None), getattr(self, "_score_log", None), getattr(self, "_vla_log", None)):
+                  getattr(self, "_decisions_txt", None), getattr(self, "_score_log", None), getattr(self, "_vla_log", None),
+                  getattr(self, "_pred_log", None)):
             if f is not None:
                 f.close()
         if server is not None:
@@ -570,6 +597,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             return None
         if name == "get_score":
             return "get_score"
+        if name == "plan_check":
+            return "plan_check"
         if cmd.get("stop_on_collision"):
             return "stop_on_collision"
         if name == "run_until_event" and cmd.get("event") in _PRIVILEGED_EVENTS:
@@ -618,6 +647,10 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             return {"ok": True, **self._percept(cmd)}
         if name == "clearance":
             return {"ok": True, "clearance": self._clearance(cmd)}
+        if name in ("predict", "plan_check"):
+            if not self._extras or self._motion is None:
+                return {"ok": False, "error": f"{name} needs privileged_extras (this session runs without them)"}
+            return {"ok": True, name: self._predict(cmd, check=(name == "plan_check"))}
         if name == "render_bev":
             return {"ok": True, "file": self._render_bev()}
         if name == "dump_frame":
@@ -633,6 +666,11 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             self._track_pose = {"x": e["x"], "y": e["y"], "yaw": e["yaw"]} if self._dead_reckon_plan else None
             ts = cmd.get("target_speed")
             self._plan_speed = None if ts is None else float(ts)
+            if self._pred_log is not None and self._motion is not None:
+                pred = self._motion.predict(wps, e["speed"], self._plan_speed, self._plan_interval_s, ticks)
+                self._pred_log.write(json.dumps({"step": self.step, "decision": self._decision_i + 1, "ticks": ticks,
+                                                 "ego_world": [e["x"], e["y"], e["yaw"]], "poses": pred["poses"]}) + "\n")
+                self._pred_log.flush()
             self._plan_done = False
             self._mode = "plan"
             self._start_advance("ticks", cmd, n=ticks)
@@ -1213,6 +1251,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         hero_loc = hero.get_location()
         e = self._ego
         out = []
+        behaviours = px.actor_behaviours(self._scenario) if self._extras else {}
         for actor in world.get_actors():
             tid = actor.type_id
             if actor.id == hero.id or not tid.startswith(_ACTOR_PREFIXES):
@@ -1238,6 +1277,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
                 "loc": _vec(tf.location),
                 "rot": _rot(tf.rotation),
                 "velocity": _vec(vel),
+                **({"about": px.describe_actor(actor, behaviours)} if self._extras else {}),
             })
         return sorted(out, key=lambda a: a["distance_m"])
 
@@ -1386,7 +1426,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             for s in st["stop_signs"] if s["trigger_on_route_ahead_m"] is not None
         ]
         actors = [
-            {"id": a["id"], "kind": a["kind"], **a["ego"], "len": a["length_m"], "wid": a["width_m"]}
+            {"id": a["id"], "kind": a["kind"], **a["ego"], "len": a["length_m"], "wid": a["width_m"],
+             **(a.get("about") or {})}
             for a in st["actors"][:k]
         ]
         parked = sorted(st["parked_vehicles"], key=lambda p: math.hypot(p["ego"]["fwd"], p["ego"]["left"]))[:k]
@@ -1398,9 +1439,81 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             "traffic_lights_relevant": lights,
             "stop_signs_on_route": signs,
             "actors_nearest": actors,
+            **({"rules": self._rules(st), "scenarios": self._scenarios()} if self._extras else {}),
             "parked_nearest": [p["ego"] | {"len": p["length_m"], "wid": p["width_m"]} for p in parked],
             "legend": "ego frame: fwd = metres ahead, left = metres to the LEFT, v_* in m/s, yaw_rel_deg + = turned left",
         }
+
+    # ------------------------------------------------------------------ privileged extras
+    def _rules(self, st: Dict[str, Any]) -> Dict[str, Any]:
+        """The scorer's rules, with the live state it is judging you on."""
+        stops = [s for s in st["stop_signs"] if s["trigger_on_route_ahead_m"] is not None]
+        nearest = min(stops, key=lambda s: s["trigger_on_route_ahead_m"]) if stops else None
+        stop = {"rule": px.RULES_TEXT["stop_sign"], "scorer_state": px.stop_check(self._scenario)}
+        if nearest is not None:
+            tx, ty = nearest["trigger_ego"]
+            stop["next_on_route"] = {"trigger_ego": nearest["trigger_ego"], "trigger_ahead_m": nearest["trigger_on_route_ahead_m"],
+                                     "origin_to_trigger_m": _r(math.hypot(tx, ty), 1),
+                                     "inside_counting_radius": math.hypot(tx, ty) <= 4.0}
+        emergency = [{"id": a["id"], "type": a["type_id"], **{k: a["ego"][k] for k in ("fwd", "left", "v_fwd")},
+                      "same_lane": abs(a["ego"]["left"]) < 1.8}
+                     for a in st["actors"] if (a.get("about") or {}).get("emergency")]
+        return {"stop_sign": stop, "traffic_light": {"rule": px.RULES_TEXT["traffic_light"]},
+                "emergency_vehicle": {"rule": px.RULES_TEXT["emergency_vehicle"], "nearby": emergency},
+                "collisions": px.RULES_TEXT["collisions"]}
+
+    def _scenarios(self) -> List[Dict[str, Any]]:
+        e = self._ego
+        def ahead(xy):
+            return self._route_ahead_distance(xy, e["yaw"], max_offset_m=40.0)
+        try:
+            return px.scenarios_on_route(self._scenario, ahead, self._scenario_lookahead)
+        except Exception as exc:  # never let a reporting aid break a drive
+            return [{"error": repr(exc)[:200]}]
+
+    def _predict(self, cmd: Dict[str, Any], check: bool) -> Dict[str, Any]:
+        wps = np.asarray(cmd["waypoints"], dtype=np.float64)
+        assert wps.ndim == 2 and wps.shape[1] == 2 and len(wps) >= 2, "waypoints must be [[fwd,left], ...] with >= 2 points"
+        ticks = int(cmd.get("ticks", 40))
+        assert 1 <= ticks <= 200, "ticks must be 1..200"
+        ts = cmd.get("target_speed")
+        e = self._ego
+        pred = self._motion.predict(wps, e["speed"], None if ts is None else float(ts), self._plan_interval_s, ticks)
+        out = {k: v for k, v in pred.items() if k != "poses"}
+        every = max(1, ticks // 10)
+        out["poses"] = [p for i, p in enumerate(pred["poses"]) if (i + 1) % every == 0 or i == len(pred["poses"]) - 1]
+        out["legend"] = ("predicted from the measured controller model: fwd/left in the ego frame NOW; band_m is the "
+                         "95th-percentile sideways tracking error measured at that speed and curvature")
+        if not check:
+            return out
+        st = self._extract_state()
+        b = self._ego_body
+        others = [(a["id"], a.get("about", {}).get("type", a["type_id"]), a.get("about", {}).get("reacts_to_you", ""),
+                   a["ego"]["fwd"], a["ego"]["left"], a["ego"]["v_fwd"], a["ego"]["v_left"], a["ego"]["yaw_rel_deg"],
+                   a["length_m"] / 2, a["width_m"] / 2) for a in st["actors"] if a["distance_m"] <= 60]
+        others += [(None, "parked vehicle", "n/a", p["ego"]["fwd"], p["ego"]["left"], 0.0, 0.0, p["ego"]["yaw_rel_deg"],
+                    p["length_m"] / 2, p["width_m"] / 2) for p in st["parked_vehicles"]
+                   if math.hypot(p["ego"]["fwd"], p["ego"]["left"]) <= 60]
+        rows = []
+        for oid, typ, reacts, f0, l0, vf, vl, yaw, hl, hw in others:
+            best = (math.inf, None, 0.0)
+            for p in pred["poses"]:
+                ego_box = box_corners(p["fwd"], p["left"], p["yaw_rel_deg"], b["front_m"], b["half_width_m"], rear=b["rear_m"])
+                oth = box_corners(f0 + vf * p["t"], l0 + vl * p["t"], yaw, hl, hw)
+                d = poly_distance(ego_box, oth)
+                if d < best[0]:
+                    best = (d, p["t"], p["band_m"])
+            if best[1] is None:
+                continue
+            rows.append({"id": oid, "type": typ, "reacts_to_you": reacts, "min_clearance_m": _r(best[0], 2),
+                         "at_t_s": best[1], "worst_case_m": _r(best[0] - best[2], 2)})
+        rows.sort(key=lambda r: r["worst_case_m"])
+        out["clearances"] = rows[:12]
+        out["worst_case_m"] = rows[0]["worst_case_m"] if rows else None
+        out["check_legend"] = ("body-to-body clearance over the burst, others extrapolated at their current velocity "
+                               "(which a vehicle that reacts to you will not keep); worst_case_m subtracts your band_m. "
+                               "Below 0 means the measured tracking error alone could make contact")
+        return out
 
     # ------------------------------------------------------------------ BEV + frame dump
     def _local_lanes(self, reach: float):

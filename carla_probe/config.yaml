@@ -182,6 +182,17 @@ gt_dense:
   enabled: false
   scale: 0.5
 
+# privileged_extras: what the privileged driver is told beyond positions (carla_probe/privileged_extras.py):
+# every actor's type, role, emergency flag, scenario and how it treats you; the scorer's rules with the
+# live stop-sign state; the scenarios ahead on the route; and the predict / plan_check commands built on
+# the measured controller model. Privileged access only. Off by default so a stock privileged run is
+# the run the 2026-11-18 corpus was scored with; run_session.sh PRIV_EXTRAS=1 turns it on.
+privileged_extras:
+  enabled: false
+  scenario_lookahead_m: 150.0
+  # tools/characterize_controller.py output; the row used is chosen from pid.long_mode / max_throttle
+  controller_model: tools/controller_model.json
+
 # vla: a learned driving policy (SimLingo, served by carla_probe/vla_server.py; scripts/setup_vla.sh)
 # that turns the driver's SENTENCE into motion at every tick -- the `drive` command. The driver
 # supervises in language; the policy closes the loop between the driver's decisions. Both tracks:

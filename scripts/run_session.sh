@@ -116,6 +116,17 @@ RECORD_ARGS=()
 if [ "${GT_DENSE:-0}" = 1 ]; then
     sed -i -E "/^gt_dense:/,/^[a-z]/ s/^  enabled:.*/  enabled: true/" "$SESSION_DIR/config.yaml"
 fi
+# PRIV_EXTRAS=1: privileged extras (actor behaviours, rules, scenarios, predict / plan_check)
+if [ "${PRIV_EXTRAS:-0}" = 1 ]; then
+    sed -i -E "/^privileged_extras:/,/^[a-z]/ s/^  enabled:.*/  enabled: true/" "$SESSION_DIR/config.yaml"
+fi
+# PID_LONG / PID_MAX_THROTTLE: the plan controller's longitudinal setting (tools/controller_model.json)
+if [ -n "${PID_LONG:-}" ]; then
+    sed -i -E "s/^  long_mode: .*/  long_mode: $PID_LONG/" "$SESSION_DIR/config.yaml"
+fi
+if [ -n "${PID_MAX_THROTTLE:-}" ]; then
+    sed -i -E "s/^  max_throttle: .*/  max_throttle: $PID_MAX_THROTTLE/" "$SESSION_DIR/config.yaml"
+fi
 if [ "${CODE_FULL_RES:-0}" = 1 ]; then
     sed -i -E "s/^  full_res_frames:.*/  full_res_frames: true/" "$SESSION_DIR/config.yaml"
 fi

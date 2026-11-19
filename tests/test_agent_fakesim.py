@@ -861,3 +861,58 @@ def test_sensors_session_writes_a_camera_model_but_no_dense_files(make_session):
     model = json.loads((Path(r["frames_dir"]).parent / "cameras.json").read_text())
     assert set(model["cameras"]["CAM_BACK"]["intrinsics"]) == {"jpg", "full_jpg"}
     _finish(s)
+
+
+# ----------------------------------------------------------------------------- privileged extras
+def _extras_cfg(tmp_path):
+    import json as _json
+    t = np.arange(120) * 0.05
+    table = {"configs": {"pid075": {"launch": {str(v): list(np.minimum(v, 2.0 * t)) for v in (3.0, 6.0, 9.0)},
+                                    "brake": {str(v): list(np.maximum(0.0, v - 8.0 * t)) for v in (5.0, 9.0)},
+                                    "offset": [], "arc": [{"speed": 3.0, "curvature": 0.0, "p95": 0.2},
+                                                          {"speed": 9.0, "curvature": 0.03, "p95": 0.8}]}}}
+    p = tmp_path / "controller_model.json"
+    p.write_text(_json.dumps(table))
+    return {"enabled": True, "scenario_lookahead_m": 150.0, "controller_model": str(p)}
+
+
+def test_privileged_extras(make_session, tmp_path):
+    s = make_session("privileged", privileged_extras=_extras_cfg(tmp_path))
+    c = s.c
+    obs = c.call("percept")["observe"]
+    a = obs["actors_nearest"][0]
+    assert {"type", "role", "emergency"} <= set(a), a
+    assert {"stop_sign", "traffic_light", "emergency_vehicle", "collisions"} <= set(obs["rules"])
+    assert "4 m" in obs["rules"]["stop_sign"]["rule"]
+    assert isinstance(obs["scenarios"], list)
+
+    pred = c.call("predict", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=40)
+    assert pred["ok"], pred
+    p = pred["predict"]
+    assert p["poses"] and p["poses"][-1]["fwd"] > 0 and "band_m" in p["poses"][-1] and "clearances" not in p
+
+    chk = c.call("plan_check", waypoints=[[5, 0], [10, 0], [20, 0], [30, 0]], target_speed=6, ticks=60)
+    assert chk["ok"], chk
+    cl = chk["plan_check"]["clearances"]
+    lead = next(r for r in cl if r["id"] == 2)          # the fake lead car: 20 m ahead, 5 m to the right
+    assert lead["min_clearance_m"] > 0 and lead["worst_case_m"] <= lead["min_clearance_m"]
+
+    c.call("apply_plan", waypoints=[[5, 0], [10, 0], [20, 0]], ticks=5, target_speed=4)
+    rows = [json.loads(l) for l in (s.out / "predictions.jsonl").read_text().splitlines()]
+    assert len(rows) == 1 and len(rows[0]["poses"]) == 5
+    _finish(s)
+
+
+def test_extras_are_off_by_default_and_never_reach_sensors(make_session, tmp_path):
+    s = make_session("privileged")
+    obs = s.c.call("percept")["observe"]
+    assert "rules" not in obs and "type" not in obs["actors_nearest"][0]
+    assert s.c.call("predict", waypoints=[[5, 0], [10, 0]])["ok"] is False
+    _finish(s)
+    s = make_session("sensors", privileged_extras=_extras_cfg(tmp_path))
+    obs = s.c.call("percept")["observe"]
+    assert "rules" not in obs and "scenarios" not in obs
+    r = s.c.call("plan_check", waypoints=[[5, 0], [10, 0]])
+    assert r["ok"] is False and "access=sensors" in r["error"]
+    assert s.c.call("predict", waypoints=[[5, 0], [10, 0]])["ok"] is False
+    _finish(s)
