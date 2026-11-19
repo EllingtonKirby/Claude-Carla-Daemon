@@ -74,9 +74,15 @@ class MotionModel:
         curve = (1 - w) * self.launch[lo][:n] + w * self.launch[hi][:n]
         if target > ks[-1]:
             curve = curve * (target / ks[-1])
-        i = self._follow(curve, v0, rising=True) if v0 < target else n - 1
+        if v0 >= 0.85 * target:
+            # Already near the target: a cruising car settles onto it. The launch curves' overshoot
+            # belongs to a launch from standstill, not to a car already at speed.
+            for t in range(ticks):
+                out[t] = target + (v0 - target) * math.exp(-(t + 1) * DT / 0.4)
+            return out
+        i = self._follow(curve, v0, rising=True)
         for t in range(ticks):
-            out[t] = float(curve[min(i + t + 1, n - 1)]) if v0 < target else target
+            out[t] = float(curve[min(i + t + 1, n - 1)])
         return out
 
     # ------------------------------------------------------------------ lateral

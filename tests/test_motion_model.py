@@ -61,3 +61,13 @@ def test_box_distance():
     assert poly_distance(rot, box_corners(0.0, 4.0, 90.0, 0.5, 0.5)) == pytest.approx(1.5)
     ego = box_corners(0.0, 0.0, 0.0, 2.44, 0.92, rear=2.45)                         # asymmetric ego body
     assert poly_distance(ego, box_corners(-5.0, 0.0, 0.0, 0.5, 0.5)) == pytest.approx(5.0 - 2.45 - 0.5)
+
+
+def test_a_car_already_near_its_target_does_not_replay_the_launch_overshoot():
+    t = np.arange(120) * DT
+    over = np.minimum(2.0 * t, 6.6)                      # a launch curve that overshoots a 6 m/s target...
+    over[over >= 6.6] = 6.0
+    tab = {"configs": {"x": {"launch": {"6.0": list(over)}, "brake": {"6.0": list(np.maximum(0, 6 - 8 * t))},
+                             "offset": [], "arc": []}}}
+    v = MotionModel(tab, "x", 0.4, 1.1).speed_profile(5.9, 6.0, 40)
+    assert v.max() <= 6.0 + 1e-6 and v[-1] == pytest.approx(6.0, abs=0.01)

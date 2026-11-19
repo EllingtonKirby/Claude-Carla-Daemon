@@ -97,6 +97,10 @@ pid:
   speed_kd: 1.0
   speed_n: 40
   max_throttle: 0.75
+  # Launch boost (pid.py): launch_throttle while more than launch_margin m/s below the target.
+  # 0.75 = off (the stock controller). 1.0 roughly doubles the 1 s launch speed without changing cruise.
+  launch_throttle: 0.75
+  launch_margin: 1.0
   clip_delta: 0.25
   brake_speed: 0.4
   brake_ratio: 1.1

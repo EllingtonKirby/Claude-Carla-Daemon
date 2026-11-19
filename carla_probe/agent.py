@@ -209,7 +209,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         if self._extras:
             pid_cfg = cfg["pid"]
             name = ("lead" if str(pid_cfg["long_mode"]).lower() == "lead"
-                    else "pid100" if float(pid_cfg["max_throttle"]) >= 0.99 else "pid075")
+                    else "pid100" if float(pid_cfg["max_throttle"]) >= 0.99
+                    else "boost" if float(pid_cfg["launch_throttle"]) >= 0.99 else "pid075")
             table = Path(cfg["privileged_extras"]["controller_model"])
             if not table.is_absolute():
                 table = Path(__file__).resolve().parents[1] / table

@@ -107,11 +107,19 @@ def actor_behaviours(scenario) -> Dict[int, Dict[str, str]]:
                 else:
                     desc = ("flow vehicle on autopilot: ignores traffic lights and signs, brakes for vehicles in its lane",
                             "partly: it brakes for a vehicle in its lane ahead, not for one crossing")
+            elif cls in _BEHAVIOURS:
+                desc = _BEHAVIOURS[cls]
             else:
-                desc = _BEHAVIOURS.get(cls, (f"scripted ({cls})", "unknown"))
+                # Conditions (InTriggerDistanceToVehicle, DriveDistance, ...) also hold an actor; they
+                # say nothing about how it drives, so they only fill in when nothing better is known.
+                desc = None
             for a in actors:
-                if a.id not in out or out[a.id]["behaviour"].startswith("placed"):
+                known = out.get(a.id)
+                if desc is not None and (known is None or known.get("_weak") or known["behaviour"].startswith("placed")):
                     out[a.id] = {"scenario": name, "behaviour": desc[0], "reacts_to_you": desc[1]}
+                elif desc is None and known is None:
+                    out[a.id] = {"scenario": name, "behaviour": f"scripted by the scenario ({cls})",
+                                 "reacts_to_you": "unknown", "_weak": True}
         for a in getattr(sc, "other_actors", []) or []:
             if a is not None and a.id not in out:
                 out[a.id] = {"scenario": name, "behaviour": "scenario actor with no driving behaviour (parked, static or waiting for a trigger)",
@@ -122,10 +130,12 @@ def actor_behaviours(scenario) -> Dict[int, Dict[str, str]]:
 def describe_actor(actor, behaviours: Dict[int, Dict[str, str]]) -> Dict[str, Any]:
     tid = actor.type_id
     role = actor.attributes.get("role_name", "") if hasattr(actor, "attributes") else ""
-    emergency = any(w in tid for w in ("ambulance", "firetruck", "police"))
+    # Only the scenario's own emergency vehicle is one the scorer expects you to yield to; a police
+    # car in the background traffic has no lights on and no right of way.
+    emergency = role == "scenario" and any(w in tid for w in ("ambulance", "firetruck", "police"))
     info = {"type": tid, "role": role or "unknown", "emergency": emergency}
     if actor.id in behaviours:
-        info.update(behaviours[actor.id])
+        info.update({k: v for k, v in behaviours[actor.id].items() if not k.startswith("_")})
     elif role == "background":
         info.update({"behaviour": "background traffic (traffic manager): keeps its lane, brakes for vehicles ahead of it",
                      "reacts_to_you": "partly: it brakes if you are ahead of it in its lane; it does not yield to you elsewhere"})

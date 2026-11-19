@@ -387,9 +387,13 @@ gap looks like; background traffic brakes only for a vehicle ahead of it in its 
 **`scenarios`** lists the scenarios on the route within 150 m: `type`, `task` (what you have to
 do), `trigger_ahead_m`, whether it has `started`, and its `parameters` (flow speeds, spacing, ...).
 
-**Your own car's motion.** The plan controller is measured (tools/controller_model.json): from
-standstill it reaches ~3.8 m/s in 1 s and 9 m/s in ~1.7 s, overshooting the target by 5-20%
-before settling; full braking stops it from 12 m/s in ~1.2 s. It does NOT follow your path exactly:
+**Your own car's motion.** The plan controller is measured (tools/controller_model.json). In these
+sessions it launches at full throttle until it is within 1 m/s of your target speed: from
+standstill it reaches ~3.8 m/s in 1 s and 90% of 9 m/s in ~1.7 s, overshoots the target by 2-11%,
+then holds it to about +-0.15 m/s on flat road. On a real route it hunts more: measured on one
+route, cruise swung about +-0.8 m/s around a 6 m/s target, because once the car is 10% over its
+target the controller brakes, so allow ~0.5 m/s either way when timing a gap. Full braking stops it from 12 m/s in ~1.2 s and from 5 m/s in
+~0.7 s. The first ~0.5 s of a route the car does not move whatever you command. It does NOT follow your path exactly:
 the 95th-percentile sideways error is ~0.15 m on a gentle path at 3 m/s, ~0.5 m on a 3.5 m lane
 change over 15 m at 6 m/s, and ~0.8-1.0 m on a tight lane change or a 12-35 m radius curve at
 6-9 m/s. A clearance smaller than that is a coin flip.

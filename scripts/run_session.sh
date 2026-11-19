@@ -124,6 +124,9 @@ fi
 if [ -n "${PID_LONG:-}" ]; then
     sed -i -E "s/^  long_mode: .*/  long_mode: $PID_LONG/" "$SESSION_DIR/config.yaml"
 fi
+if [ -n "${PID_LAUNCH_THROTTLE:-}" ]; then
+    sed -i -E "s/^  launch_throttle: .*/  launch_throttle: $PID_LAUNCH_THROTTLE/" "$SESSION_DIR/config.yaml"
+fi
 if [ -n "${PID_MAX_THROTTLE:-}" ]; then
     sed -i -E "s/^  max_throttle: .*/  max_throttle: $PID_MAX_THROTTLE/" "$SESSION_DIR/config.yaml"
 fi

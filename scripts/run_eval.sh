@@ -66,7 +66,7 @@ fi
 [ -z "$CODE_LIB" ] || [ -d "$CODE_LIB" ] || { echo "ERROR: CODE_LIB=$CODE_LIB is not a directory" >&2; exit 1; }
 : "${PRIV_EXTRAS:=0}"
 [ "$PRIV_EXTRAS" = 0 ] || [ "$TRACK" = privileged ] || { echo "ERROR: PRIV_EXTRAS=1 needs the privileged track" >&2; exit 1; }
-export PRIV_EXTRAS PID_LONG PID_MAX_THROTTLE
+export PRIV_EXTRAS PID_LONG PID_MAX_THROTTLE PID_LAUNCH_THROTTLE
 : "${DRIVER:=claude}"
 : "${VLA:=}"
 case "$DRIVER" in
@@ -303,7 +303,7 @@ fi
 cat > "$SESSION_DIR/driver.json" <<EOF
 {"model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "driver": "claude", "vla": "${VLA:-off}", "autocompact": "$AUTOCOMPACT",
- "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB",
+ "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "pid_launch_throttle": "${PID_LAUNCH_THROTTLE:-config}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB",
  "code_lib_sha256": "$([ -n "$CODE_LIB" ] && (cd "$CODE_LIB" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1))",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}

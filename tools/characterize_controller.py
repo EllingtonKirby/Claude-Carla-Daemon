@@ -176,6 +176,8 @@ def make_ctl(base_cfg, name):
         cfg["long_mode"], cfg["max_throttle"] = "pid", 1.0
     elif name == "lead":
         cfg["long_mode"] = "lead"
+    elif name == "boost":
+        cfg["long_mode"], cfg["max_throttle"], cfg["launch_throttle"] = "pid", 0.75, 1.0
     else:
         raise ValueError(name)
     return cfg
@@ -187,12 +189,17 @@ def main():
     ap.add_argument("--town", default="Town04")
     ap.add_argument("--configs", default="pid075,pid100,lead")
     ap.add_argument("--out", type=Path, default=REPO / "tools" / "controller_model.json")
+    ap.add_argument("--lateral-from", default=None,
+                    help="copy the tracking-error rows from this already-measured config instead of measuring "
+                         "(valid when only the longitudinal setting differs)")
+    ap.add_argument("--merge", action="store_true", help="add to the existing --out file instead of replacing it")
     args = ap.parse_args()
     base = yaml.safe_load((REPO / "carla_probe" / "config.yaml").read_text())
     client = carla.Client("localhost", args.port)
     client.set_timeout(300)
     rig = Rig(client, args.town)
-    out = {"vehicle": "vehicle.lincoln.mkz_2020", "dt": DT, "town": args.town, "measured": time.strftime("%Y-%m-%d"),
+    prev = json.loads(args.out.read_text()) if args.merge and args.out.exists() else None
+    out = prev or {"vehicle": "vehicle.lincoln.mkz_2020", "dt": DT, "town": args.town, "measured": time.strftime("%Y-%m-%d"),
            "pid_base": {k: base["pid"][k] for k in ("steer_mode", "lookahead_min", "lookahead_max", "speed_scale", "speed_offset")},
            "configs": {}}
     try:
@@ -205,6 +212,7 @@ def main():
                 rows = rig.drive(PIDController(cfg), straight_plan(x, y, yaw), target, 120, 0.5)
                 sp = [round(r[3], 3) for r in rows]
                 res["launch"][str(target)] = sp
+                res.setdefault("cruise_std", {})[str(target)] = round(float(np.std(sp[-40:])), 3)
                 print(f"{name} launch {target:>4} m/s: v@1s {sp[19]:.2f} v@2s {sp[39]:.2f} v@4s {sp[79]:.2f} max {max(sp):.2f}", flush=True)
             for v0 in (5.0, 9.0, 12.0):
                 ctl = PIDController(cfg)
@@ -214,7 +222,11 @@ def main():
                 res["brake"][str(v0)] = sp
                 stop = next((i for i, s in enumerate(sp) if s < 0.1), None)
                 print(f"{name} brake from {v0:>4} (actual {sp[0]:.2f}): stopped after {stop and stop * DT} s", flush=True)
-            for v in (3.0, 6.0, 9.0):
+            if args.lateral_from:
+                src = out["configs"][args.lateral_from]
+                res["offset"], res["arc"] = src["offset"], src["arc"]
+                res["lateral_copied_from"] = args.lateral_from
+            for v in (() if args.lateral_from else (3.0, 6.0, 9.0)):
                 for lat, dist in ((1.5, 15.0), (3.5, 15.0), (3.5, 30.0)):
                     ctl = PIDController(cfg)
                     run_up(rig, ctl, v)

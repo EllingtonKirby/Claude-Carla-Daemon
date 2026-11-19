@@ -77,6 +77,12 @@ class PIDController:
         self.turn = PID(float(cfg["turn_kp"]), float(cfg["turn_ki"]), float(cfg["turn_kd"]), int(cfg["turn_n"]))
         self.speed = PID(float(cfg["speed_kp"]), float(cfg["speed_ki"]), float(cfg["speed_kd"]), int(cfg["speed_n"]))
         self.max_throttle = float(cfg["max_throttle"])
+        # Launch boost: allow `launch_throttle` while the car is more than `launch_margin` m/s below
+        # its target, max_throttle otherwise. Measured 2026-11-19: max_throttle 1.0 everywhere
+        # doubles the launch but turns cruise into a bang-bang limit cycle (+-1.3 m/s around 6 m/s),
+        # because the gains were tuned against the 0.75 cap; boosting only the launch keeps both.
+        self.launch_throttle = float(cfg["launch_throttle"])
+        self.launch_margin = float(cfg["launch_margin"])
         self.clip_delta = float(cfg["clip_delta"])
         self.brake_speed = float(cfg["brake_speed"])
         self.brake_ratio = float(cfg["brake_ratio"])
@@ -187,7 +193,10 @@ class PIDController:
             return throttle, brake, 0.0
         brake = desired < self.brake_speed or (speed / desired) > self.brake_ratio
         delta = float(np.clip(desired - speed, 0.0, self.clip_delta))
-        throttle = 0.0 if brake else float(np.clip(self.speed.step(delta), 0.0, self.max_throttle))
+        cap = self.launch_throttle if (desired - speed) > self.launch_margin else self.max_throttle
+        throttle = 0.0 if brake else float(np.clip(self.speed.step(delta), 0.0, max(cap, self.max_throttle)))
+        if not brake and cap > self.max_throttle:
+            throttle = cap          # well below target: the clipped-error PID would saturate anyway
         return throttle, brake, delta
 
     def _lead_throttle(self, desired: float, speed: float) -> Tuple[float, bool]:
