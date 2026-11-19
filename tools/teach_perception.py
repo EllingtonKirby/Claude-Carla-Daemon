@@ -241,19 +241,19 @@ def headline(sc: Dict[str, Any]) -> str:
 
 # --------------------------------------------------------------------------- the two models
 def _wait_outside_block() -> None:
-    """No model calls between 09:00 and 19:00 local time (EVAL_TZ, default Europe/Paris): these
-    runs use too much of the shared subscription during working hours."""
-    import datetime
-    from zoneinfo import ZoneInfo
-    tz = ZoneInfo(os.environ.get("EVAL_TZ", "Europe/Paris"))
+    """No model calls between 09:00 and 19:00 local time: these runs use too much of the shared
+    subscription during working hours. EVAL_TZ is a POSIX TZ string (the run host has no zoneinfo
+    database); the default is Paris time with its summer-time rule."""
+    os.environ["TZ"] = os.environ.get("EVAL_TZ", "CET-1CEST,M3.5.0,M10.5.0/3")
+    time.tzset()
     start, end = int(os.environ.get("EVAL_BLOCK_START", 9)), int(os.environ.get("EVAL_BLOCK_END", 19))
     while True:
-        now = datetime.datetime.now(tz)
-        if not (start <= now.hour < end):
+        now = time.localtime()
+        if not (start <= now.tm_hour < end):
             return
-        resume = now.replace(hour=end, minute=1, second=0, microsecond=0)
-        print(f"  {now:%H:%M} {tz} is inside the {start}:00-{end}:00 block; waiting until {resume:%H:%M}", flush=True)
-        time.sleep(max(60, (resume - now).total_seconds()))
+        wait = (end - now.tm_hour) * 3600 - now.tm_min * 60 - now.tm_sec + 60
+        print(f"  {time.strftime('%H:%M')} local is inside the {start}:00-{end}:00 block; waiting {wait // 60} min", flush=True)
+        time.sleep(wait)
 
 
 def _rate_limited(transcript: Path) -> Optional[int]:
