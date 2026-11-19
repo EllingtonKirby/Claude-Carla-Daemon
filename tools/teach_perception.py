@@ -47,6 +47,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -239,16 +240,40 @@ def headline(sc: Dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- the two models
+def _rate_limited(transcript: Path) -> Optional[int]:
+    """The reset time if the subscription refused this call, else None. On 2026-11-18 a refused
+    student turn left an empty library and a refused teacher no feedback, and the rounds that
+    followed silently scored the same code again."""
+    reset = None
+    for line in transcript.open():
+        if '"rate_limit_event"' in line and '"status":"rejected"' in line:
+            try:
+                reset = int(json.loads(line)["rate_limit_info"].get("resetsAt") or 0) or reset
+            except Exception:
+                reset = reset or 0
+        if '"terminal_reason":"api_error"' in line and reset is None:
+            reset = 0
+    return reset
+
+
 def claude(prompt: str, cwd: Path, model: str, tools: str, allow: List[str], env: Dict[str, str],
            transcript: Path) -> int:
     settings = {"sandbox": {"enabled": False}, "env": env, "permissions": {"allow": allow}}
     (cwd / ".settings.json").write_text(json.dumps(settings))
-    with open(transcript, "w") as f:
-        p = subprocess.run(["claude", "-p", prompt, "--model", model, "--output-format", "stream-json", "--verbose",
-                            "--permission-mode", "dontAsk", "--tools", tools, "--setting-sources", "",
-                            "--settings", str(cwd / ".settings.json")],
-                           cwd=str(cwd), stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=7200)
-    return p.returncode
+    for attempt in range(8):
+        with open(transcript, "w") as f:
+            p = subprocess.run(["claude", "-p", prompt, "--model", model, "--output-format", "stream-json", "--verbose",
+                                "--permission-mode", "dontAsk", "--tools", tools, "--setting-sources", "",
+                                "--settings", str(cwd / ".settings.json")],
+                               cwd=str(cwd), stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=7200)
+        reset = _rate_limited(transcript)
+        if reset is None:
+            return p.returncode
+        wait = max(600, reset + 120 - int(time.time()))
+        transcript.rename(transcript.with_suffix(f".ratelimited{attempt}.jsonl"))
+        print(f"  rate limited; retrying this turn in {wait // 60} min", flush=True)
+        time.sleep(wait)
+    raise RuntimeError("rate limited 8 times in a row")
 
 
 STUDENT_PROMPT = """You are writing a perception library for a car driving in the CARLA simulator. It \
