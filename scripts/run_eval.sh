@@ -120,7 +120,9 @@ abort() {
     exit 1
 }
 echo "    waiting for the route to load (log: $SESSION_DIR/launcher.log)"
-if ! access="$("$PY" -m carla_probe.client "$ADDR" --wait "$LOAD_TIMEOUT_S" status 2>/dev/null \
+# timeout: the client's --wait bounds CONNECTING, not the reply; a daemon that accepts and never
+# answers (a CARLA that died mid-load) otherwise hangs this script forever (11 h, 2026-11-18).
+if ! access="$(timeout $((LOAD_TIMEOUT_S + 60)) "$PY" -m carla_probe.client "$ADDR" --wait "$LOAD_TIMEOUT_S" status 2>/dev/null \
         | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["status"]["access"])')"; then
     abort "session did not come up; see $SESSION_DIR/evaluator.log and carla.log"
 fi
