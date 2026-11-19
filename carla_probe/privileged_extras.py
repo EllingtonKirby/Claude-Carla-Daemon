@@ -83,8 +83,27 @@ def _iterate(node):
         return
 
 
+def _flat_actors(x) -> List[Any]:
+    """Actors held by a node, flattened: some scenarios keep lists of lists (ConstructionObstacleTwoWays
+    crashed the daemon on 2026-11-19 with `'list' object has no attribute 'id'`)."""
+    if x is None:
+        return []
+    if isinstance(x, (list, tuple, set)):
+        return [a for item in x for a in _flat_actors(item)]
+    return [x] if hasattr(x, "id") and hasattr(x, "type_id") else []
+
+
 def actor_behaviours(scenario) -> Dict[int, Dict[str, str]]:
-    """actor id -> {scenario, behaviour, reacts}, read from the scenarios' behaviour trees."""
+    """actor id -> {scenario, behaviour, reacts}, read from the scenarios' behaviour trees. Never
+    raises: this only enriches the driver's view, and a reporting error must not end a route."""
+    try:
+        return _actor_behaviours(scenario)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[PROBE] actor_behaviours failed: {exc!r}", flush=True)
+        return {}
+
+
+def _actor_behaviours(scenario) -> Dict[int, Dict[str, str]]:
     out: Dict[int, Dict[str, str]] = {}
     if scenario is None:
         return out
@@ -95,9 +114,9 @@ def actor_behaviours(scenario) -> Dict[int, Dict[str, str]]:
             cls = type(node).__name__
             actors: List[Any] = []
             if hasattr(node, "_actor_list"):
-                actors = [a for a in (node._actor_list or []) if a is not None]
-            elif getattr(node, "_actor", None) is not None and hasattr(node._actor, "id"):
-                actors = [node._actor]
+                actors = _flat_actors(node._actor_list)
+            elif getattr(node, "_actor", None) is not None:
+                actors = _flat_actors(node._actor)
             if not actors:
                 continue
             if cls in _FLOWS or hasattr(node, "_actor_list"):
@@ -120,8 +139,8 @@ def actor_behaviours(scenario) -> Dict[int, Dict[str, str]]:
                 elif desc is None and known is None:
                     out[a.id] = {"scenario": name, "behaviour": f"scripted by the scenario ({cls})",
                                  "reacts_to_you": "unknown", "_weak": True}
-        for a in getattr(sc, "other_actors", []) or []:
-            if a is not None and a.id not in out:
+        for a in _flat_actors(getattr(sc, "other_actors", [])):
+            if a.id not in out:
                 out[a.id] = {"scenario": name, "behaviour": "scenario actor with no driving behaviour (parked, static or waiting for a trigger)",
                              "reacts_to_you": "n/a"}
     return out
@@ -147,7 +166,14 @@ def describe_actor(actor, behaviours: Dict[int, Dict[str, str]]) -> Dict[str, An
 
 
 def stop_check(scenario) -> Optional[Dict[str, Any]]:
-    """The scorer's own stop-sign state (RunningStopTest), read live."""
+    """The scorer's own stop-sign state (RunningStopTest), read live. Never raises."""
+    try:
+        return _stop_check(scenario)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": repr(exc)[:200]}
+
+
+def _stop_check(scenario) -> Optional[Dict[str, Any]]:
     tree = getattr(scenario, "criteria_tree", None) if scenario is not None else None
     for node in _iterate(tree) if tree is not None else []:
         if type(node).__name__ == "RunningStopTest":

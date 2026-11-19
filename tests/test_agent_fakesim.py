@@ -916,3 +916,25 @@ def test_extras_are_off_by_default_and_never_reach_sensors(make_session, tmp_pat
     assert r["ok"] is False and "access=sensors" in r["error"]
     assert s.c.call("predict", waypoints=[[5, 0], [10, 0]])["ok"] is False
     _finish(s)
+
+
+def test_behaviour_reader_survives_nested_actor_lists():
+    import types as _t
+    from carla_probe import privileged_extras as px
+    a1 = _t.SimpleNamespace(id=11, type_id="vehicle.audi.tt")
+    a2 = _t.SimpleNamespace(id=12, type_id="static.prop.constructioncone")
+
+    class ActorFlow:                         # name matters: the reader keys on the node class
+        def __init__(self):
+            self._actor_list = [[a1], [a2, None]]
+            self._is_constant_velocity_active = True
+
+    class Tree:
+        def iterate(self):
+            yield ActorFlow()
+
+    sc = _t.SimpleNamespace(config=_t.SimpleNamespace(type="ConstructionObstacleTwoWays"), behavior_tree=Tree(),
+                            other_actors=[[a2]])
+    beh = px.actor_behaviours(_t.SimpleNamespace(list_scenarios=[sc]))
+    assert beh[11]["reacts_to_you"].startswith("no") and 12 in beh
+    assert px.actor_behaviours(_t.SimpleNamespace(list_scenarios=[_t.SimpleNamespace(behavior_tree=1 / 1)])) == {}

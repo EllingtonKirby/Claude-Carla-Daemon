@@ -1449,12 +1449,22 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             "traffic_lights_relevant": lights,
             "stop_signs_on_route": signs,
             "actors_nearest": actors,
-            **({"rules": self._rules(st), "scenarios": self._scenarios()} if self._extras else {}),
+            **(self._extras_view(st) if self._extras else {}),
             "parked_nearest": [p["ego"] | {"len": p["length_m"], "wid": p["width_m"]} for p in parked],
             "legend": "ego frame: fwd = metres ahead, left = metres to the LEFT, v_* in m/s, yaw_rel_deg + = turned left",
         }
 
     # ------------------------------------------------------------------ privileged extras
+    def _extras_view(self, st: Dict[str, Any]) -> Dict[str, Any]:
+        """rules + scenarios for the observe reply; a failure here is reported, never raised."""
+        out: Dict[str, Any] = {}
+        for key, fn in (("rules", lambda: self._rules(st)), ("scenarios", self._scenarios)):
+            try:
+                out[key] = fn()
+            except Exception as exc:  # noqa: BLE001
+                out[key] = {"error": repr(exc)[:200]}
+        return out
+
     def _rules(self, st: Dict[str, Any]) -> Dict[str, Any]:
         """The scorer's rules, with the live state it is judging you on."""
         stops = [s for s in st["stop_signs"] if s["trigger_on_route_ahead_m"] is not None]
