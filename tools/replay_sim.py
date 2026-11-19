@@ -50,6 +50,8 @@ VIEWS = {  # camera transform relative to the ego (CARLA vehicle frame: x forwar
     "chase": carla.Transform(carla.Location(x=-7.5, z=3.5), carla.Rotation(pitch=-15.0)),
     "front": carla.Transform(carla.Location(x=0.8, z=1.7)),
     "top": carla.Transform(carla.Location(z=45.0), carla.Rotation(pitch=-90.0)),
+    # ahead of the ego looking back at it: what is following (an emergency vehicle, a tailgater)
+    "rear": carla.Transform(carla.Location(x=9.0, z=4.0), carla.Rotation(pitch=-14.0, yaw=180.0)),
 }
 
 
@@ -215,7 +217,8 @@ def captioned(img: np.ndarray, sess: Session, frame: int, panel_h: int) -> Tuple
     decision = sess.decision_at(step) if step is not None else None
     font = cv2.FONT_HERSHEY_SIMPLEX
     # events: red banner over the picture, where the eye already is
-    ev = [e for e in sess.events if abs(int(e["frame_seen"]) - frame) <= 10]
+    # min_speed notices fire constantly and Bench2Drive does not penalise them: they would bury the rest
+    ev = [e for e in sess.events if abs(int(e["frame_seen"]) - frame) <= 10 and not e["type"].startswith("min_speed")]
     for k, e in enumerate(ev[:2]):
         txt = f"{e['type']}: {e['message']}"[: w // 9]
         cv2.rectangle(out, (0, h - 30 * (k + 1)), (w, h - 30 * k), (0, 0, 160), -1)
