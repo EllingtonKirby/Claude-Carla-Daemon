@@ -240,6 +240,22 @@ def headline(sc: Dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- the two models
+def _wait_outside_block() -> None:
+    """No model calls between 09:00 and 19:00 local time (EVAL_TZ, default Europe/Paris): these
+    runs use too much of the shared subscription during working hours."""
+    import datetime
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(os.environ.get("EVAL_TZ", "Europe/Paris"))
+    start, end = int(os.environ.get("EVAL_BLOCK_START", 9)), int(os.environ.get("EVAL_BLOCK_END", 19))
+    while True:
+        now = datetime.datetime.now(tz)
+        if not (start <= now.hour < end):
+            return
+        resume = now.replace(hour=end, minute=1, second=0, microsecond=0)
+        print(f"  {now:%H:%M} {tz} is inside the {start}:00-{end}:00 block; waiting until {resume:%H:%M}", flush=True)
+        time.sleep(max(60, (resume - now).total_seconds()))
+
+
 def _rate_limited(transcript: Path) -> Optional[int]:
     """The reset time if the subscription refused this call, else None. On 2026-11-18 a refused
     student turn left an empty library and a refused teacher no feedback, and the rounds that
@@ -261,6 +277,7 @@ def claude(prompt: str, cwd: Path, model: str, tools: str, allow: List[str], env
     settings = {"sandbox": {"enabled": False}, "env": env, "permissions": {"allow": allow}}
     (cwd / ".settings.json").write_text(json.dumps(settings))
     for attempt in range(8):
+        _wait_outside_block()
         with open(transcript, "w") as f:
             p = subprocess.run(["claude", "-p", prompt, "--model", model, "--output-format", "stream-json", "--verbose",
                                 "--permission-mode", "dontAsk", "--tools", tools, "--setting-sources", "",
