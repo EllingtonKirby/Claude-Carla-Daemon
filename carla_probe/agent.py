@@ -208,13 +208,16 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._motion: Optional[MotionModel] = None
         if self._extras:
             pid_cfg = cfg["pid"]
-            name = ("lead" if str(pid_cfg["long_mode"]).lower() == "lead"
+            name = ("plus" if list(pid_cfg["avoid_speed_band"] or []) and float(pid_cfg["launch_throttle"]) >= 0.99
+                    and abs(float(pid_cfg["speed_scale"]) - 0.5) < 1e-6
+                    else "lead" if str(pid_cfg["long_mode"]).lower() == "lead"
                     else "pid100" if float(pid_cfg["max_throttle"]) >= 0.99
                     else "boost" if float(pid_cfg["launch_throttle"]) >= 0.99 else "pid075")
             table = Path(cfg["privileged_extras"]["controller_model"])
             if not table.is_absolute():
                 table = Path(__file__).resolve().parents[1] / table
-            self._motion = MotionModel.load(table, name, float(pid_cfg["brake_speed"]), float(pid_cfg["brake_ratio"]))
+            self._motion = MotionModel.load(table, name, float(pid_cfg["brake_speed"]), float(pid_cfg["brake_ratio"]),
+                                            cruise_target=PIDController(pid_cfg).cruise_target)
         self._pred_log = None
         self._bev = {k: cfg["bev"][k] for k in ("forward_m", "back_m", "side_m", "px_per_m", "draw_lanes",
                                                 "lane_step_m", "lane_max_nodes")}
@@ -742,6 +745,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         i0 = min(int(np.argmin(np.linalg.norm(plan_ego, axis=1))), len(plan_ego) - 2)
         steer, throttle, brake, _meta = self.pid.control(plan_ego[i0:], e["speed"], self._plan_speed, self._plan_interval_s)
         control.steer, control.throttle, control.brake = steer, throttle, brake
+        gear = self.pid.gear(_meta["desired_speed"], e["speed"])
+        if gear is not None:
+            control.manual_gear_shift, control.gear = True, gear
         return control
 
     # ------------------------------------------------------------------ learned policy (`drive`)
@@ -805,6 +811,9 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         i0 = min(int(np.argmin(np.linalg.norm(plan_ego, axis=1))), len(plan_ego) - 2)
         steer, throttle, brake, _meta = self.pid.control(plan_ego[i0:], e["speed"], self._plan_speed, self._plan_interval_s)
         control.steer, control.throttle, control.brake = steer, throttle, brake
+        gear = self.pid.gear(_meta["desired_speed"], e["speed"])
+        if gear is not None:
+            control.manual_gear_shift, control.gear = True, gear
         return control
 
     def _vla_summary(self) -> Optional[Dict[str, Any]]:

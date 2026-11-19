@@ -32,7 +32,11 @@ DT = 0.05
 
 
 class MotionModel:
-    def __init__(self, table: Dict[str, Any], config: str, brake_speed: float, brake_ratio: float) -> None:
+    def __init__(self, table: Dict[str, Any], config: str, brake_speed: float, brake_ratio: float,
+                 cruise_target=None) -> None:
+        # the controller's own target mapping (pid.PIDController.cruise_target), so a prediction holds
+        # the speed the car will actually hold
+        self.cruise_target = cruise_target or (lambda v: v)
         assert config in table["configs"], f"controller_model.json has no config {config!r}"
         c = table["configs"][config]
         self.config = config
@@ -45,8 +49,8 @@ class MotionModel:
         self.max_curvature = float(self._err[:, 1].max()) if len(self._err) else 0.0
 
     @classmethod
-    def load(cls, path: Path, config: str, brake_speed: float, brake_ratio: float) -> "MotionModel":
-        return cls(json.loads(Path(path).read_text()), config, brake_speed, brake_ratio)
+    def load(cls, path: Path, config: str, brake_speed: float, brake_ratio: float, cruise_target=None) -> "MotionModel":
+        return cls(json.loads(Path(path).read_text()), config, brake_speed, brake_ratio, cruise_target)
 
     # ------------------------------------------------------------------ longitudinal
     def _follow(self, curve: np.ndarray, v: float, rising: bool) -> int:
@@ -111,7 +115,8 @@ class MotionModel:
         for j in range(1, len(seg)):
             dh = math.atan2(math.sin(headings[j] - headings[j - 1]), math.cos(headings[j] - headings[j - 1]))
             curv[j] = dh / max((seg[j] + seg[j - 1]) / 2, 1e-3)
-        vs = self.speed_profile(speed, float(target_speed), ticks)
+        target_speed = float(self.cruise_target(float(target_speed)))
+        vs = self.speed_profile(speed, target_speed, ticks)
         s, poses, beyond = 0.0, [], False
         for t in range(ticks):
             s += float(vs[t]) * DT

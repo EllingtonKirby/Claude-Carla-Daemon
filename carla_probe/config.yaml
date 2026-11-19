@@ -101,6 +101,15 @@ pid:
   # 0.75 = off (the stock controller). 1.0 roughly doubles the 1 s launch speed without changing cruise.
   launch_throttle: 0.75
   launch_margin: 1.0
+  # Over-speed at cruise (pid.py): coast between brake_ratio and cruise_brake_ratio x target, then
+  # brake at cruise_brake. 1.1 / 1.0 = stock (full brake at 10% over).
+  cruise_brake_ratio: 1.1
+  cruise_brake: 1.0
+  # Hold a gear at cruise instead of letting the automatic gearbox hunt (pid.py gear()). false = stock.
+  cruise_gear_hold: false    # has no effect in a leaderboard run: it forces manual_gear_shift = False
+  # Cruise targets inside this band (m/s) are held at its nearer edge: the automatic gearbox hunts
+  # there (pid.py cruise_target). [] = off (stock).
+  avoid_speed_band: []
   clip_delta: 0.25
   brake_speed: 0.4
   brake_ratio: 1.1
@@ -115,7 +124,16 @@ pid:
   # ego reaches a waypoint. `adaptive` and `lead` interpolate along the plan instead, so the
   # lookahead means what it says and scales with speed: close when slow, far when fast.
   # Switching away from `fixed` changes the plant the gains above were fitted to -- re-validate.
-  steer_mode: adaptive       # fixed | adaptive | lead
+  steer_mode: adaptive       # fixed | adaptive | lead | pursuit
+  # pursuit only (pid.py _pursuit): lookahead from the rear axle = gain * speed + offset, clipped
+  pursuit_gain: 0.5
+  pursuit_offset: 3.0
+  pursuit_min: 3.0
+  pursuit_max: 15.0
+  wheelbase_m: 2.86          # vehicle.lincoln.mkz_2020, measured from its physics control
+  rear_axle_m: 1.389         # rear axle behind the vehicle origin
+  max_steer_deg: 70.0
+  steering_curve: [[0.0, 1.0], [20.0, 0.9], [60.0, 0.8], [120.0, 0.7]]   # km/h -> steer scale, from its physics control
   lookahead_min: 2.5         # adaptive only: arc-length clip (m)
   lookahead_max: 10.5
   speed_scale: 0.9755321901954155    # adaptive + lead: lookahead = speed_scale*v + speed_offset

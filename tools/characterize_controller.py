@@ -117,8 +117,12 @@ class Rig:
             ahead = plan_ego[plan_ego[:, 0] > 0.5]
             if len(ahead) < 2:
                 ahead = plan_ego[-2:]
-            steer, thr, brk, _ = ctl.control(ahead, v, target, interval)
-            self.car.apply_control(carla.VehicleControl(steer=steer, throttle=thr, brake=brk))
+            steer, thr, brk, meta = ctl.control(ahead, v, target, interval)
+            control = carla.VehicleControl(steer=steer, throttle=thr, brake=brk)
+            gear = ctl.gear(meta["desired_speed"], v)
+            if gear is not None:
+                control.manual_gear_shift, control.gear = True, gear
+            self.car.apply_control(control)
             self.world.tick()
             rows.append((x, y, yaw, v, thr, brk, steer))
         return rows
@@ -176,6 +180,11 @@ def make_ctl(base_cfg, name):
         cfg["long_mode"], cfg["max_throttle"] = "pid", 1.0
     elif name == "lead":
         cfg["long_mode"] = "lead"
+    elif name == "plus":   # the Privileged+ preset: must match run_session.sh PID_PRESET=plus
+        cfg.update({"long_mode": "pid", "max_throttle": 0.75, "launch_throttle": 1.0, "steer_mode": "adaptive",
+                    "speed_scale": 0.5, "speed_offset": 1.2, "lookahead_min": 2.2,
+                    "cruise_brake_ratio": 1.25, "cruise_brake": 0.4, "cruise_gear_hold": False,
+                    "avoid_speed_band": [5.0, 6.7]})
     elif name == "boost":
         cfg["long_mode"], cfg["max_throttle"], cfg["launch_throttle"] = "pid", 0.75, 1.0
     else:

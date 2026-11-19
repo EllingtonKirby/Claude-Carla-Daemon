@@ -124,6 +124,15 @@ fi
 if [ -n "${PID_LONG:-}" ]; then
     sed -i -E "s/^  long_mode: .*/  long_mode: $PID_LONG/" "$SESSION_DIR/config.yaml"
 fi
+# PID_PRESET=plus: the Privileged+ controller (launch boost, pure-pursuit steering, graded braking at
+# cruise), as measured into tools/controller_model.json row "plus". Individual PID_* switches below
+# still apply on top.
+if [ "${PID_PRESET:-}" = plus ]; then
+    sed -i -E "s/^  launch_throttle: .*/  launch_throttle: 1.0/; s/^  speed_scale: .*/  speed_scale: 0.5/; \
+               s/^  speed_offset: .*/  speed_offset: 1.2/; s/^  lookahead_min: .*/  lookahead_min: 2.2/; \
+               s/^  cruise_brake_ratio: .*/  cruise_brake_ratio: 1.25/; s/^  cruise_brake: .*/  cruise_brake: 0.4/; \
+               s/^  avoid_speed_band: .*/  avoid_speed_band: [5.0, 6.7]/" "$SESSION_DIR/config.yaml"
+fi
 if [ -n "${PID_LAUNCH_THROTTLE:-}" ]; then
     sed -i -E "s/^  launch_throttle: .*/  launch_throttle: $PID_LAUNCH_THROTTLE/" "$SESSION_DIR/config.yaml"
 fi
