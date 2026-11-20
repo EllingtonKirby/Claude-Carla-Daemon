@@ -34,7 +34,7 @@ def account(s: Path) -> str:
 def sections(md: str):
     parts = {}
     for name in SECTIONS:
-        m = re.search(rf"^##\s*{re.escape(name)}\s*$(.*?)(?=^##\s|\Z)", md, re.M | re.S | re.I)
+        m = re.search(rf"^##\s*{re.escape(name)}\b[^\n]*$(.*?)(?=^##\s|\Z)", md, re.M | re.S | re.I)
         parts[name] = m.group(1).strip() if m else ""
     return parts
 

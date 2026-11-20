@@ -46,8 +46,10 @@
 #           the route's scenarios, predict / plan_check. Privileged track only.
 #      PID_LONG / PID_MAX_THROTTLE (config): the plan controller's longitudinal setting; must match a
 #           row of tools/controller_model.json for predict to be honest (pid075 / pid100 / lead)
-#      DEBRIEF (1): after the route, resume the driver's conversation for a structured debrief
-#           (scripts/debrief.sh -> SESSION_DIR/debrief.md); 0 skips it
+#      DEBRIEF (prompt): prompt = the closing account the prompt already asks for uses fixed debrief
+#           headings (outcome, what worked, ...), extracted to SESSION_DIR/debrief.md -- nearly free;
+#           resume = also resume the driver's conversation afterwards (scripts/debrief.sh; costs about
+#           as much as the drive again, the resumed context is not served from cache); 0 = neither
 #      DRIVER (claude): claude | baseline_vla | baseline_route -- the two baselines need no LLM
 #           (carla_probe/baseline_driver.py) and skip the sandbox; MODEL is then just a label
 set -euo pipefail
@@ -197,6 +199,19 @@ $REPO_ROOT/docs/OPERATOR_GUIDE.md and $REPO_ROOT/benchmark/PROTOCOL.md, and foll
 Drive the route to the end. Stop when an advance returns route_end or the client reports that
 the daemon closed the connection. Then reply with a short account of the drive.
 EOF
+if [ "${DEBRIEF:-prompt}" != 0 ]; then
+    cat >> "$DRIVER_WS/prompt.txt" <<'EOF'
+Write that account as a debrief for the people improving this harness and for future drivers, under
+exactly these headings, concrete (numbers, commands, moments) and under 450 words:
+## Outcome (the result you believe you got, and anything scored against you)
+## What worked
+## What did not work (mistakes, near misses, wasted time)
+## Surprises (anything about the car, controller, daemon, tools or scenario that differed from what
+the guide or the replies led you to expect)
+## What would have helped (information, tools or guide changes; general lessons, not route tactics)
+## One-line lesson
+EOF
+fi
 if [ "$VLA" = on ]; then
     cat >> "$DRIVER_WS/prompt.txt" <<EOF
 
@@ -343,7 +358,19 @@ fi
 wait "$LAUNCH_PID" || true
 # Debrief (scripts/debrief.sh): resume the driver's own conversation once the route is over and ask what
 # it learned. A follow-up turn, never part of the drive. DEBRIEF=0 skips it.
-if [ "${DEBRIEF:-1}" = 1 ] && [ "$DRIVER" = claude ]; then
+if [ "${DEBRIEF:-prompt}" = prompt ] && [ "$DRIVER" = claude ]; then
+    python3 - "$SESSION_DIR" <<'PY2' || echo "    no debrief in the closing account"
+import json, sys
+s = sys.argv[1]; out = ""
+for line in open(f"{s}/driver_transcript.jsonl"):
+    if '"type":"result"' in line:
+        out = json.loads(line).get("result") or out
+i = out.find("## Outcome")
+if i < 0:
+    sys.exit(1)
+open(f"{s}/debrief.md", "w").write(out[i:].strip() + "\n")
+PY2
+elif [ "${DEBRIEF:-prompt}" = resume ] && [ "$DRIVER" = claude ]; then
     bash "$REPO_ROOT/scripts/debrief.sh" "$SESSION_DIR" || echo "    debrief failed (see $SESSION_DIR/debrief_stderr.log)"
 fi
 # What the driver wrote is part of the result: keep it beside the transcript.
