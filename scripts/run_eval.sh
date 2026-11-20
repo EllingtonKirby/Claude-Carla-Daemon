@@ -46,6 +46,8 @@
 #           the route's scenarios, predict / plan_check. Privileged track only.
 #      PID_LONG / PID_MAX_THROTTLE (config): the plan controller's longitudinal setting; must match a
 #           row of tools/controller_model.json for predict to be honest (pid075 / pid100 / lead)
+#      DEBRIEF (1): after the route, resume the driver's conversation for a structured debrief
+#           (scripts/debrief.sh -> SESSION_DIR/debrief.md); 0 skips it
 #      DRIVER (claude): claude | baseline_vla | baseline_route -- the two baselines need no LLM
 #           (carla_probe/baseline_driver.py) and skip the sandbox; MODEL is then just a label
 set -euo pipefail
@@ -339,6 +341,11 @@ if [ "$stopped_early" = true ]; then
         > /dev/null 2>&1 || true
 fi
 wait "$LAUNCH_PID" || true
+# Debrief (scripts/debrief.sh): resume the driver's own conversation once the route is over and ask what
+# it learned. A follow-up turn, never part of the drive. DEBRIEF=0 skips it.
+if [ "${DEBRIEF:-1}" = 1 ] && [ "$DRIVER" = claude ]; then
+    bash "$REPO_ROOT/scripts/debrief.sh" "$SESSION_DIR" || echo "    debrief failed (see $SESSION_DIR/debrief_stderr.log)"
+fi
 # What the driver wrote is part of the result: keep it beside the transcript.
 [ "$CODE_TOOL" != on ] || cp -r "$CODE_DIR" "$SESSION_DIR/driver_code" 2>/dev/null || true
 echo "=== eval done -> $SESSION_DIR"
