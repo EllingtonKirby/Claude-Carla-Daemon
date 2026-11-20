@@ -212,7 +212,13 @@ RULES_TEXT = {
     "stop_sign": ("a stop counts only if your speed drops below 0.1 m/s while your origin is within 4 m of the "
                   "stop's trigger centre (stop_signs_on_route.trigger_ego) and on its lane; stopping earlier "
                   "does not count, and leaving the zone unstopped is a stop infraction"),
-    "traffic_light": "do not cross the stop line (stop_line_ego) while your light is red or yellow",
+    "traffic_light": ("do not cross the stop line (stop_line_ego) while your light is red or yellow; your light is "
+                      "the one whose stop line is on your route (stop_line_on_route_ahead_m is set). affects_ego is "
+                      "CARLA's own flag and reads true only once you are inside the light's trigger box, so false "
+                      "at a distance does not mean the light is not yours"),
+    "min_speed": ("min_speed_infractions events are logged at every route checkpoint whatever your speed ratio, "
+                  "even above 100%, and Bench2Drive does not penalise them (statistics_manager: 'unused'); "
+                  "ignore them and never trade safety for them"),
     "emergency_vehicle": ("yielding to an emergency vehicle means leaving the lane it is in so it can pass; "
                           "slowing or holding your lane in front of it is a failure to yield"),
     "collisions": "any contact with a vehicle, pedestrian or object is scored, including at walking speed",

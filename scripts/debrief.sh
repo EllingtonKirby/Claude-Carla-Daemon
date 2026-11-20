@@ -34,8 +34,21 @@ lessons only, not route-specific tactics.
 ## One-line lesson
 The single most useful sentence for the next driver.'
 cd "$WS" || exit 1
+# Same tool list and setting sources as the drive, so the resumed request has the same prompt prefix
+# and is served from the drive's prompt cache (with --tools "" the prefix changes and the whole drive
+# is re-read uncached: the debrief then cost more than the drive). Tools stay offered but every call
+# is denied: the settings allow nothing and deny each tool.
+TOOLS="$(head -1 "$S/driver_transcript.jsonl" | python3 -c "import json,sys; print(','.join(json.load(sys.stdin).get('tools') or ['Bash','Read']))")"
+python3 - "$WS" "$TOOLS" <<'PY2'
+import json, sys
+ws, tools = sys.argv[1], sys.argv[2].split(",")
+s = json.load(open(f"{ws}/settings.json"))
+s["permissions"] = {"allow": [], "deny": tools}
+json.dump(s, open(f"{ws}/debrief_settings.json", "w"), indent=1)
+PY2
 timeout 900 claude -p "$PROMPT" --resume "$SID" --model "$MODEL" --output-format json \
-    --permission-mode dontAsk --tools "" --setting-sources "" > "$S/debrief.json" 2> "$S/debrief_stderr.log" < /dev/null
+    --permission-mode dontAsk --tools "$TOOLS" --setting-sources "" --settings "$WS/debrief_settings.json" \
+    > "$S/debrief.json" 2> "$S/debrief_stderr.log" < /dev/null
 python3 - "$S" <<'PY'
 import json, sys
 s = sys.argv[1]
@@ -46,5 +59,6 @@ except Exception as e:
 if d.get("is_error") or not d.get("result"):
     print(f"debrief failed: {str(d)[:300]}", file=sys.stderr); sys.exit(1)
 open(f"{s}/debrief.md", "w").write(d["result"].strip() + "\n")
-print(f"wrote {s}/debrief.md (${d.get('total_cost_usd', 0):.2f})")
+u = d.get("usage", {})
+print(f"wrote {s}/debrief.md (${d.get('total_cost_usd', 0):.2f}, cache read {u.get('cache_read_input_tokens')}, written {u.get('cache_creation_input_tokens')})")
 PY
