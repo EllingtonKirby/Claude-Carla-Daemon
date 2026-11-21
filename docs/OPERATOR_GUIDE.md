@@ -98,8 +98,11 @@ reviewed against the scene after the run. Write the reason you actually acted on
 Every ego-frame distance in a reply — `route_points_ego`, an actor's `fwd`/`left`, a plan waypoint
 — is measured from the ego **origin**. Your bodywork is not there. On the Bench2Drive hero it
 reaches **2.44 m ahead of the origin, 2.45 m behind, and 0.92 m to each side** (`get_state` →
-`ego_body`, from `config.yaml`). The front camera is mounted a further 0.8 m forward still, so a
-car you judge "3 m away" in `CAM_FRONT` is about **1.4 m from your bumper**.
+`ego_body`, from `config.yaml`). `CAM_FRONT` is **not** at the bumper: it is mounted at x = **-1.5 m**
+(1.5 m *behind* the origin, about 3.9 m behind your front bumper) and 2.0 m up (`get_state` ->
+`ego_body.cameras` has every mount). A distance you measure from a `CAM_FRONT` image is from the
+camera: subtract ~3.9 m to get the gap to your front bumper. Anything about 4 m from the camera is
+already touching you.
 
 This matters more than it sounds. Two cars touch when their centres reach the sum of their
 half-extents: roughly **4.8 m nose to nose and 2.0 m flank to flank**. A "3 m gap" ahead is not a
