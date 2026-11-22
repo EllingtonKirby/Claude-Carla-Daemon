@@ -1,0 +1,2 @@
+export VENV_DIR=$HOME/workspace/venv_ccd_hornet CARLA_ROOT=/home/ekirby/shared/eramzi_pv/carla_0915
+export SDL_VIDEODRIVER=dummy
