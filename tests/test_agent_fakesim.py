@@ -918,6 +918,42 @@ def test_extras_are_off_by_default_and_never_reach_sensors(make_session, tmp_pat
     _finish(s)
 
 
+def test_info_extras_on_camera_tracks(make_session, tmp_path):
+    ex = _extras_cfg(tmp_path)
+    s = make_session("sensors", privileged_extras={**ex, "enabled": False}, info_extras={"enabled": True})
+    c = s.c
+    obs = c.call("percept")["observe"]
+    assert {"stop_sign", "traffic_light", "min_speed"} <= set(obs["rules"]) and isinstance(obs["scenarios"], list)
+    assert isinstance(obs["rules"]["stop_sign"], str)            # text only: no live scorer state
+    assert c.call("predict", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=40)["ok"]
+    r = c.call("plan_check", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=40)
+    assert r["ok"] is False and "obstacles" in r["error"]       # nothing from ground truth
+    # an obstacle 2 m to the left of the path binds; the advice is to move right
+    chk = c.call("plan_check", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=120,
+                 obstacles=[[12, 2.0, 4.0, 1.8]])
+    assert chk["ok"], chk
+    pc = chk["plan_check"]
+    row = pc["clearances"][0]
+    assert row["side"] == "left" and row["trend"] == "closing"
+    assert pc["binding"] and "RIGHT" in pc["binding"], pc["clearances"]
+    pinch = c.call("plan_check", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=120,
+                   obstacles=[[12, 2.0, 4.0, 1.8], [12, -2.0, 4.0, 1.8]])["plan_check"]
+    assert pinch["binding"].startswith("pinched")
+    _finish(s)
+
+
+def test_notices_for_speed_band_and_negative_throttle(make_session, tmp_path):
+    s = make_session("privileged", pid={**yaml.safe_load((REPO / "carla_probe" / "config.yaml").read_text())["pid"], "avoid_speed_band": [5.0, 6.7]})
+    c = s.c
+    r = c.call("apply_plan", waypoints=[[5, 0], [10, 0], [20, 0]], ticks=2, target_speed=6.0, why="t")
+    assert any("gearbox" in n for n in r["result"].get("notices", [])), r["result"]
+    r = c.call("set_control", steer=0.0, throttle=-0.5, brake=0.0, ticks=1, why="t")
+    assert any("no reverse" in n for n in r["result"].get("notices", [])), r["result"]
+    r = c.call("set_control", steer=0.0, throttle=0.2, brake=0.0, ticks=1, why="t")
+    assert "notices" not in r["result"]
+    _finish(s)
+
+
 def test_behaviour_reader_survives_nested_actor_lists():
     import types as _t
     from carla_probe import privileged_extras as px

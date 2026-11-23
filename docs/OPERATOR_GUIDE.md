@@ -414,6 +414,34 @@ and up to ~0.4 m on a 12 m radius curve at 6 m/s. Plan your margins on top of th
 Use `plan_check` before any plan near another road user, and treat `worst_case_m` as the margin
 you actually have.
 
+## 8f. Info extras (camera tracks): the rules, the scenarios, and where your car will go
+
+With info extras on a sensors or dense session, every observe reply also carries:
+
+- `rules`: the scorer's rules as text (where a stop counts, which light is yours, yielding to an
+  emergency vehicle, collisions, and `min_speed` events, which are logged but never penalised).
+  There is no live scorer state here: on these tracks you judge it yourself.
+- `scenarios`: each scenario on the route, what it is and what to do, and roughly how far ahead it
+  starts (straight-line forward distance from your GNSS pose estimate).
+
+`predict` works as in §8e. `plan_check` needs the obstacles from you, from your own perception, as
+`obstacles=[[fwd,left,length,width],...]`, optionally with `v_fwd,v_left` and then `yaw_rel_deg`. It
+checks the plan against them body to body, the same way it does on the privileged track. It is only
+as good as your estimates: a car you have not seen, or put in the wrong place, is not checked.
+
+## Replies that tell you something changed (all tracks)
+
+- `notices` in a driving reply: a `target_speed` inside the band where the gearbox hunts is run at a
+  nearby speed instead (the notice says which). A negative throttle is applied as 0.
+- **There is no reverse.** If you are stopped against something, steer away with positive throttle.
+  Do not steer hard while stopped against it, and do not wait for the car to roll back.
+- `plan_check` returns `binding`: which obstacle limits the plan and which way to move. If both sides
+  bind, it says "pinched": then no sideways shift helps, so change the timing or the speed.
+  `warnings` flags a burst that ends mid-turn, arcs tighter than about 8 m radius (the real heading
+  overshoots the plan there), and plans beyond what the controller was measured on.
+- Privileged observe: `left_the_list` names actors that dropped out of `actors_nearest`, and says
+  whether each is still there but beyond `k`, or gone.
+
 ## 9. Hard-won lessons (both tracks)
 
 - **Short bursts near other road users.** Long advances on a stale read are how cars get

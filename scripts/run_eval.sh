@@ -44,6 +44,8 @@
 #           driver.json; the prompt says it is there.
 #      PRIV_EXTRAS (0): 1 = privileged extras (OPERATOR_GUIDE §8e): actor behaviours, the scorer's rules,
 #           the route's scenarios, predict / plan_check. Privileged track only.
+#      INFO_EXTRAS (0): 1 = on a camera track, the rules text, the route's scenarios and predict /
+#           plan_check on obstacles the driver supplies (OPERATOR_GUIDE §8f)
 #      PID_LONG / PID_MAX_THROTTLE (config): the plan controller's longitudinal setting; must match a
 #           row of tools/controller_model.json for predict to be honest (pid075 / pid100 / lead)
 #      DEBRIEF (prompt): prompt = the closing account the prompt already asks for uses fixed debrief
@@ -70,7 +72,9 @@ fi
 [ -z "$CODE_LIB" ] || [ -d "$CODE_LIB" ] || { echo "ERROR: CODE_LIB=$CODE_LIB is not a directory" >&2; exit 1; }
 : "${PRIV_EXTRAS:=0}"
 [ "$PRIV_EXTRAS" = 0 ] || [ "$TRACK" = privileged ] || { echo "ERROR: PRIV_EXTRAS=1 needs the privileged track" >&2; exit 1; }
-export PRIV_EXTRAS PID_LONG PID_MAX_THROTTLE PID_LAUNCH_THROTTLE PID_PRESET
+: "${INFO_EXTRAS:=0}"
+[ "$INFO_EXTRAS" = 0 ] || [ "$TRACK" != privileged ] || { echo "ERROR: INFO_EXTRAS=1 is for the camera tracks (sensors, dense)" >&2; exit 1; }
+export INFO_EXTRAS PRIV_EXTRAS PID_LONG PID_MAX_THROTTLE PID_LAUNCH_THROTTLE PID_PRESET
 : "${DRIVER:=claude}"
 : "${VLA:=}"
 case "$DRIVER" in
@@ -228,6 +232,14 @@ treats you, the scorer's rules with its live state, the scenarios ahead, and the
 plan_check commands for where your own car will go.
 EOF
 fi
+if [ "$INFO_EXTRAS" = 1 ]; then
+    cat >> "$DRIVER_WS/prompt.txt" <<EOF
+
+This session has the info extras (OPERATOR_GUIDE.md §8f): the scorer's rules as text, the scenarios
+on your route, and the predict and plan_check commands for where your own car will go; plan_check
+checks a plan against obstacles you estimate yourself.
+EOF
+fi
 if [ "$CODE_TOOL" = on ]; then
     cat >> "$DRIVER_WS/prompt.txt" <<EOF
 
@@ -320,7 +332,7 @@ fi
 cat > "$SESSION_DIR/driver.json" <<EOF
 {"model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "driver": "claude", "vla": "${VLA:-off}", "autocompact": "$AUTOCOMPACT",
- "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "pid_launch_throttle": "${PID_LAUNCH_THROTTLE:-config}", "pid_preset": "${PID_PRESET:-none}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB",
+ "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "info_extras": "$INFO_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "pid_launch_throttle": "${PID_LAUNCH_THROTTLE:-config}", "pid_preset": "${PID_PRESET:-none}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB",
  "code_lib_sha256": "$([ -n "$CODE_LIB" ] && (cd "$CODE_LIB" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1))",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}

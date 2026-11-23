@@ -120,6 +120,10 @@ fi
 if [ "${PRIV_EXTRAS:-0}" = 1 ]; then
     sed -i -E "/^privileged_extras:/,/^[a-z]/ s/^  enabled:.*/  enabled: true/" "$SESSION_DIR/config.yaml"
 fi
+# INFO_EXTRAS=1: camera tracks get rules text, scenarios, predict / plan_check on their own obstacles
+if [ "${INFO_EXTRAS:-0}" = 1 ]; then
+    sed -i -E "/^info_extras:/,/^[a-z]/ s/^  enabled:.*/  enabled: true/" "$SESSION_DIR/config.yaml"
+fi
 # PID_LONG / PID_MAX_THROTTLE: the plan controller's longitudinal setting (tools/controller_model.json)
 if [ -n "${PID_LONG:-}" ]; then
     sed -i -E "s/^  long_mode: .*/  long_mode: $PID_LONG/" "$SESSION_DIR/config.yaml"

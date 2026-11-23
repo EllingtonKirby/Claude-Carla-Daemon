@@ -215,6 +215,12 @@ privileged_extras:
   # tools/characterize_controller.py output; the row used is chosen from pid.long_mode / max_throttle
   controller_model: tools/controller_model.json
 
+# info_extras: the Privileged+ information that needs no ground-truth perception, for the camera tracks
+# (sensors, dense): the scorer's rules as text, the route's scenarios, and predict / plan_check against
+# obstacles the driver supplies. Uses privileged_extras' scenario_lookahead_m and controller_model.
+info_extras:
+  enabled: false
+
 # vla: a learned driving policy (SimLingo, served by carla_probe/vla_server.py; scripts/setup_vla.sh)
 # that turns the driver's SENTENCE into motion at every tick -- the `drive` command. The driver
 # supervises in language; the policy closes the loop between the driver's decisions. Both tracks:
