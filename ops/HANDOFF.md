@@ -17,16 +17,39 @@ the background; this file has the current state and the open tasks.
 - `privileged-v2` → base `sensors-control-knobs` (a fork copy of upstream `valeoai/sensors-control-knobs`).
   Don't use the fork's `main` as base: it is far behind (82 commits, vendored fail2drive).
   `privileged-ladder` is an ancestor of `privileged-v2` and needs no separate PR.
+- `strong-perception` → base `privileged-v2` (PR #3, stacked): the strong perception backend.
 - `oracle-frames-deny-fix` → base `sensors-control-knobs`: one Sep 21 commit (6ef0435, BLUE oracle
   permissions) that sat on local `main` and was never pushed. Its parent is upstream main 3eb6811,
   which the base contains, so the PR shows only that commit. Upstream main is where it belongs.
 
-## Run state: everything is stopped
+## Run state (2026-11-24 12:00 UTC)
 
-- No lanes are running. Check with `ps -eo pid,args | grep -E "[l]anes3|[r]un_eval"`.
-- The last session, B2i+ 28198, finished: Completed, DS 100. `classify_sessions.py`: 96 valid, 4 cutoff.
-- `~/workspace/quota_cap` = `0.0` until 2026-11-26 08:00 UTC: every lane blocks. Raise it or delete it
-  only when the user says to run.
+- Budget agreed 2026-11-24: 10-15% of the weekly quota through Thursday night. `~/workspace/quota_cap`
+  = `0.64` (seven-day ceiling) until 2026-11-27 12:00 UTC; seven_day was 0.49 at 01:00 UTC on 11-24.
+- Queued, waiting for the 19:00 Paris run window:
+  1. A0+ (`sessions/a0plus/jobs_a1.txt`, lanes3 slots 6-8, log `sessions/a0plus/lanes.log`):
+     privileged, plus controller, NO extras. Splits A1's 88.3 -> 98.8 into controller vs information.
+  2. B3s+ (`sessions/ladder_plus/jobs_b3s.txt`), chained by `~/workspace/b3s_after_a0plus.sh`
+     (log `sessions/ladder_plus/lanes_b3s.log`): cameras + code tool + the STRONG perception
+     service (Depth Pro 2 + SAM 3, `BACKEND=strong`), plus controller. It starts the service on
+     8795 itself and stops it after.
+  - `carla_watchdog.sh` is running.
+- Check with `ps -eo pid,args | grep -E "[l]anes3|[r]un_eval|[b]3s_after"`; classify with
+  `python3 ~/workspace/classify_sessions.py`.
+
+## Strong perception (branch `strong-perception`, PR #3)
+
+- Offline check, no Claude usage: `tools/eval_dense_estimators.py` on the 223 dense route scenes in
+  `ccd_exp/sessions/scenes` (results in `sessions/perception_eval/{gt,legacy,strong}.json`).
+  Depth |rel| median at 0-10 / 10-20 / 20-40 m: legacy 1.31 / 0.93 / 0.45, strong 0.07 / 0.09 / 0.18.
+  Actor recall (median position error) at the same bands: legacy 0.69 (2.5 m) / 0.51 (3.9 m) /
+  0.28 (3.5 m); strong 0.94 (1.5 m) / 0.89 (1.7 m) / 0.59 (1.9 m); the same pipeline on ground truth
+  0.97 (1.4 m) / 0.96 (1.7 m) / 0.68 (1.8 m). Strong is close to the dense ground truth, so B3s+ is
+  expected near B2+ (81.6) if drivers use it. Only 12 pedestrians in the scenes: no pedestrian verdict.
+- Env: `~/workspace/venv_perception2` (Python 3.12, `scripts/setup_perception2.sh`). The HF token
+  (SAM 3 access) is in `~/.cache/huggingface/token` and `~/mack/ekirby/.hf_cluster/token`; never commit
+  it. `uv python install 3.11 3.12` on a fresh container: both perception venvs link to uv's interpreters.
+- ~0.67 s per image for depth + six SAM 3 prompts on the L40S; 9 GB VRAM.
 - Not run (budget cap reached): B0i+ 25378, B0i+ 3514, B2i+ 3514. Their `.claim` folders were set by
   hand, and each is logged in `sessions/ladder_plus/RELAUNCHES.md`.
 
@@ -85,7 +108,7 @@ the background; this file has the current state and the open tasks.
   or planning tools. Driver debriefs' causal claims are leads, not proof (the camera-mount fix did not
   lift B0).
 
-## Candidate next steps (none agreed yet; ask the user)
+## Candidate next steps (A0+ and B3s+ are running; the rest are not agreed)
 
 1. Suggest the §5.1 camera-mount fix (0bfa4af) and the oracle fix (6ef0435) to whoever owns the shared
    checkout and upstream.

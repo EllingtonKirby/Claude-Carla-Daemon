@@ -53,9 +53,15 @@ class PerceptionClient:
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode()
 
-    def depth(self, path: str) -> np.ndarray:
-        """Metric depth in metres along the optical axis, at the image's own resolution."""
-        out = self._post("/depth", {"image_b64": self._image(path)})
+    def depth(self, path: str, f_px: Optional[float] = None) -> np.ndarray:
+        """Metric depth in metres along the optical axis, at the image's own resolution.
+
+        f_px: the camera's focal length in pixels at this image's size (frames/cameras.json). The
+        strong backend uses it instead of estimating the field of view; the legacy one ignores it."""
+        body: Dict[str, Any] = {"image_b64": self._image(path)}
+        if f_px is not None:
+            body["f_px"] = float(f_px)
+        out = self._post("/depth", body)
         return _decode_npy(out["depth_npy_b64"]).astype(np.float32)
 
     def segment(self, path: str, prompts: Optional[List[str]] = None) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
