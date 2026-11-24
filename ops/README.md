@@ -13,3 +13,4 @@ there. Not used by the daemon or the drivers.
 - `render_*.sh` and `capture_all.sh` render commentary videos. `teach_launch.sh` and `b4_watch.sh` ran the teacher/student step.
 - `ladder_*_after*.sh` chain one batch after another. `apply_guide_camera_fix.py` applied commit 0bfa4af.
 - `hornet_envrc` is the environment file (CARLA path, SDL_VIDEODRIVER=dummy, venv).
+- `HANDOFF.md` is the session-to-session handoff for these experiments: run state, user rules, results, next steps.
