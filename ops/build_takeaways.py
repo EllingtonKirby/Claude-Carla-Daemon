@@ -13,7 +13,7 @@ for c in cls:
     if c["kind"] != "valid" or not ("priv_v2" in c["session"] or "ladder_plus" in c["session"]):
         continue
     s = Path(c["path"])
-    arm = "A1" if "priv_v2" in c["session"] else {"B0_sensors": "B0+", "B2_dense_code": "B2+", "B0_sensors_guidefix": "B0g+"}.get(s.parent.parent.name, s.parent.parent.name)
+    arm = "A1" if "priv_v2" in c["session"] else {"B0_sensors": "B0+", "B2_dense_code": "B2+", "B0_sensors_guidefix": "B0g+", "B0_sensors_info": "B0i+", "B2_dense_code_info": "B2i+"}.get(s.parent.parent.name, s.parent.parent.name)
     try:
         ds = json.loads((s / "result.json").read_text())["_checkpoint"]["records"][0]["scores"]["score_composed"]
     except Exception:

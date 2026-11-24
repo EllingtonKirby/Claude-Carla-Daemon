@@ -27,6 +27,8 @@ ARMS = {
     "B0": ("B0 Sensors", "sensors", "cameras only", "off", "yes"),
     "B0+": ("B0+ Sensors, new controller", "sensors", "as B0, on the rebuilt (plus) controller", "off", "yes"),
     "B0g+": ("B0+ with the corrected camera mount", "sensors", "as B0+, after fixing the guide's CAM_FRONT position (it was 4.7 m off)", "off", "yes"),
+    "B0i+": ("B0+ with info extras", "sensors", "as B0g+, plus the rules, the scenarios and predict/plan_check on its own obstacles", "off", "yes"),
+    "B2i+": ("B2+ with info extras", "dense", "as B2+, plus the rules, the scenarios and predict/plan_check on its own obstacles", "on", "no"),
     "B2+": ("B2+ Perfect pixels + code, new controller", "dense", "as B2, on the rebuilt (plus) controller", "on", "no"),
     "B1": ("B1 Sensors + code", "sensors", "cameras only, plus a confined Python tool", "on", "yes"),
     "B2": ("B2 Perfect pixels + code", "dense", "cameras + ground-truth depth & instance masks, plus the Python tool", "on", "no"),
@@ -34,7 +36,7 @@ ARMS = {
     "B4": ("B4 + teacher's library", "sensors", "as B3, plus the perception library a GT-holding teacher coached", "on", "yes"),
     "B4c": ("B4c + self-taught library", "sensors", "as B3, plus the library the student wrote with no teacher", "on", "yes"),
 }
-LADDER_DIR = {"B0_sensors": "B0", "B0_sensors_guidefix": "B0g", "B1_sensors_code": "B1", "B2_dense_code": "B2", "B3_sensors_code_perc": "B3",
+LADDER_DIR = {"B0_sensors": "B0", "B0_sensors_guidefix": "B0g", "B0_sensors_info": "B0i", "B2_dense_code_info": "B2i", "B1_sensors_code": "B1", "B2_dense_code": "B2", "B3_sensors_code_perc": "B3",
               "B4_sensors_code_perc_teacherlib": "B4", "B4c_sensors_code_perc_selflib": "B4c"}
 
 
