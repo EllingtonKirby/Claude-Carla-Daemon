@@ -72,7 +72,7 @@ the background; this file has the current state and the open tasks.
 - Worktrees:
   - `~/workspace/ccd_base`: A0 baseline, detached at bd0bb10.
   - `~/workspace/ccd_exp`: branch `privileged-ladder`.
-  - `~/workspace/ccd_priv2`: branch `privileged-v2`, the current one.
+  - `~/workspace/ccd_priv2`: branch `strong-perception` (stacked on `privileged-v2`), the current one.
 - Env: `source ~/workspace/hornet_envrc`. CARLA 0.9.15 needs `SDL_VIDEODRIVER=dummy`. Tests:
   `cd ~/workspace/ccd_priv2 && .venv/bin/python -m pytest -q tests` (269 pass).
 - Operator scripts live in `~/workspace/` and are mirrored in `ops/` (README there).
