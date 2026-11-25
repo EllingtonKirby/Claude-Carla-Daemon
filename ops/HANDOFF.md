@@ -22,20 +22,16 @@ the background; this file has the current state and the open tasks.
   permissions) that sat on local `main` and was never pushed. Its parent is upstream main 3eb6811,
   which the base contains, so the PR shows only that commit. Upstream main is where it belongs.
 
-## Run state (2026-11-24 12:00 UTC)
+## Run state (2026-11-25 05:30 UTC): everything is stopped
 
-- Budget agreed 2026-11-24: 10-15% of the weekly quota through Thursday night. `~/workspace/quota_cap`
-  = `0.64` (seven-day ceiling) until 2026-11-27 12:00 UTC; seven_day was 0.49 at 01:00 UTC on 11-24.
-- Queued, waiting for the 19:00 Paris run window:
-  1. A0+ (`sessions/a0plus/jobs_a1.txt`, lanes3 slots 6-8, log `sessions/a0plus/lanes.log`):
-     privileged, plus controller, NO extras. Splits A1's 88.3 -> 98.8 into controller vs information.
-  2. B3s+ (`sessions/ladder_plus/jobs_b3s.txt`), chained by `~/workspace/b3s_after_a0plus.sh`
-     (log `sessions/ladder_plus/lanes_b3s.log`): cameras + code tool + the STRONG perception
-     service (Depth Pro 2 + SAM 3, `BACKEND=strong`), plus controller. It starts the service on
-     8795 itself and stops it after.
-  - `carla_watchdog.sh` is running.
-- Check with `ps -eo pid,args | grep -E "[l]anes3|[r]un_eval|[b]3s_after"`; classify with
-  `python3 ~/workspace/classify_sessions.py`.
+- Nothing is running. `~/workspace/quota_cap` = `0.0` until 2026-11-26 08:00 UTC: Wednesday night
+  off (the user's call). seven_day was 0.65 at the last gate (00:04 UTC on 11-25), ~0.67 after the
+  last three drives. The weekly window resets ~Friday midday.
+- Done overnight 11-24/25, all 20 sessions valid (`classify_sessions.py` now includes `a0plus`):
+  - A0+ (`sessions/a0plus/a1`): privileged, plus controller, no extras. Mean 96.4 over 10 routes.
+  - B3s+ (`sessions/ladder_plus/B3s_strong_perc/a1`): cameras + code tool + strong perception. Mean
+    81.9 over 10 routes. Every driver called the service: 241 of 462 script runs used it (5-44 per drive).
+- Nothing is queued. Next runs need the user's go and a new cap.
 
 ## Strong perception (branch `strong-perception`, PR #3)
 
@@ -99,7 +95,9 @@ the background; this file has the current state and the open tasks.
 | B0i+ (B0g+ + info extras) | 60.9 on 8 routes (B0g+ 65.0 on the same 8) |
 | B2+ (GT depth/masks + code) | 81.6 |
 | B2i+ (B2+ + info extras) | 84.8 on 9 routes (B2+ 79.5 on the same 9) |
+| B3s+ (cameras + code + Depth Pro 2 / SAM 3 service) | 81.9 |
 | A0 (privileged) | 88.3 |
+| A0+ (A0 on the plus controller, no extras) | 96.4 |
 | A1 Privileged+ (10 routes x 3 attempts) | 98.8, 29/30 at 100 |
 
 - One attempt per route has a median spread of ~27 DS, so camera-arm differences under ~10 are noise.
@@ -108,7 +106,7 @@ the background; this file has the current state and the open tasks.
   or planning tools. Driver debriefs' causal claims are leads, not proof (the camera-mount fix did not
   lift B0).
 
-## Candidate next steps (A0+ and B3s+ are running; the rest are not agreed)
+## Candidate next steps (none agreed yet; ask the user)
 
 1. Suggest the §5.1 camera-mount fix (0bfa4af) and the oracle fix (6ef0435) to whoever owns the shared
    checkout and upstream.

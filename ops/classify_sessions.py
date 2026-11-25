@@ -17,7 +17,8 @@ from pathlib import Path
 
 ROOTS = [Path.home() / "workspace/ccd_base/sessions/priv_opus", Path.home() / "workspace/ccd_base/sessions/priv_fable",
          Path.home() / "workspace/ccd_exp/sessions/ladder", Path.home() / "workspace/ccd_priv2/sessions/priv_v2",
-         Path.home() / "workspace/ccd_priv2/sessions/ladder_plus"]
+         Path.home() / "workspace/ccd_priv2/sessions/ladder_plus",
+         Path.home() / "workspace/ccd_priv2/sessions/a0plus"]
 
 
 def _live_sessions():
