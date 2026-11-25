@@ -119,8 +119,12 @@ the background; this file has the current state and the open tasks.
 - Offline (tools/eval_driver_lib.py, sessions/perception_eval/driver_lib.json): footprints 77%
   recall, 0.97 m nearest-point error, 0.47 m sideways (Depth Pro median point: 1.85 m); lanes found
   in ~60% of frames, centre within 0.15 m when found; tracker halves jitter, poor when coasting.
-- Queued job list, NOT launched: `sessions/ladder_plus/jobs_lib.txt`, B3s_guide (new guide, no lib)
-  and B3s_guide_lib (new guide + lib), 10 routes each. Needs the user's go and a cap; ~15-20% of a week.
+- The user (11-25): no strict A/B needed. Run only B3s+L (new guide + library), 10 routes, on
+  Thursday night 11-26, and compare tokens with the earlier B3s+/B2+ runs. Scheduled:
+  `~/workspace/b3sL_thursday.sh` (running, sleeps until 17:55 UTC 11-26; cancel with
+  `pkill -f b3sL_thursday.sh`) sets cap 0.80 until 11-27 12:00 UTC, starts the strong service, runs
+  `sessions/ladder_plus/jobs_b3sL.txt`, stops the service and sets the cap back to 0.0. Log:
+  `sessions/ladder_plus/lanes_b3sL.log`. `jobs_lib.txt` also holds a no-library control, not scheduled.
 
 ## Candidate next steps (none agreed yet; ask the user)
 
