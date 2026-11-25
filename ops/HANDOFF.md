@@ -106,6 +106,22 @@ the background; this file has the current state and the open tasks.
   or planning tools. Driver debriefs' causal claims are leads, not proof (the camera-mount fix did not
   lift B0).
 
+## Driver perception library (branch `driver-lib`, PR #4) -- built 11-25, not yet driven
+
+- Agreed with the user 11-25: present TOOLS, not solutions. No harness path smoothing (rejected as
+  too much of a hint). Built instead: `carla_probe/driver_lib/` (camera geometry, object footprints
+  from the perception service, lane markings + LaneTracker, zoom), installed per session with
+  `CODE_LIB=carla_probe/driver_lib`; and an OPERATOR_GUIDE §8 rule on not chasing lane-estimate noise
+  (applies to every camera run from now on).
+- Why: camera arms flip steering ~50 times per 10 s of straight cruising (privileged 1-5); each new
+  camera plan moves the path sideways by a median 14-24 cm (privileged 1-4 cm). The library also
+  tests token savings: drivers rewrote ~300-390 lines of perception code per drive.
+- Offline (tools/eval_driver_lib.py, sessions/perception_eval/driver_lib.json): footprints 77%
+  recall, 0.97 m nearest-point error, 0.47 m sideways (Depth Pro median point: 1.85 m); lanes found
+  in ~60% of frames, centre within 0.15 m when found; tracker halves jitter, poor when coasting.
+- Queued job list, NOT launched: `sessions/ladder_plus/jobs_lib.txt`, B3s_guide (new guide, no lib)
+  and B3s_guide_lib (new guide + lib), 10 routes each. Needs the user's go and a cap; ~15-20% of a week.
+
 ## Candidate next steps (none agreed yet; ask the user)
 
 1. Suggest the §5.1 camera-mount fix (0bfa4af) and the oracle fix (6ef0435) to whoever owns the shared
