@@ -113,6 +113,14 @@ _VLA_MODES = ("plain", "commentary", "command", "instruction", "safety", "cot")
 _ADVANCE_EVENTS = ("stopped", "plan_done") + _PRIVILEGED_EVENTS
 
 
+
+# LEAD's TransFuser v6 camera ring (lead/common/config_base.py, CARLA_LEADERBOARD2_6CAMERAS): CARLA
+# vehicle frame (x forward, y right, z up), yaw + = right. Order matters: the model sees them stitched.
+_TFV6_RING = [((0.0, -0.3, 2.25), -57.5), ((0.25, 0.0, 2.25), 0.0), ((0.0, 0.3, 2.25), 57.5),
+              ((-0.30, 0.3, 2.25), 180 - 57.5), ((-0.55, 0.0, 2.25), 180.0), ((-0.30, -0.3, 2.25), -180 + 57.5)]
+TFV6_CAMERAS = [{"id": f"TFV6_{i + 1}", "x": p[0], "y": p[1], "z": p[2], "roll": 0.0, "pitch": 0.0, "yaw": yaw,
+                 "width": 384, "height": 384, "fov": 60} for i, (p, yaw) in enumerate(_TFV6_RING)]
+
 class _ShutdownRequested(Exception):
     pass
 
@@ -234,6 +242,11 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._record_every = int(cfg["record"]["camera_every_n_ticks"])
         self._ego_body = {k: float(cfg["ego"][k]) for k in ("front_m", "rear_m", "half_width_m")}
         self._cameras = [dict(c) for c in cfg["cameras"]]
+        # TFV6_CAMERAS=1: TransFuser v6's own 6-camera ring (LEAD, CARLA_LEADERBOARD2_6CAMERAS), declared
+        # as ordinary sensors so the run stays sensors-eligible. Used only to feed the TransFuser
+        # perception service (carla_probe/tfv6_server.py): each percept writes them stitched left to
+        # right as TFV6_rgb.jpg (JPEG quality 90, as LEAD's own agent does), not in the driver's files.
+        self._tfv6_cameras = TFV6_CAMERAS if os.environ.get("TFV6_CAMERAS", "0") == "1" else []
         self._percept_cams = list(cfg["percept"]["cams"])
         self._percept_scale = float(cfg["percept"]["scale"])
         self._percept_on_advance = bool(cfg["percept"]["on_advance"])
@@ -328,6 +341,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
              "width": c["width"], "height": c["height"], "fov": c["fov"]}
             for c in self._cameras
         ]
+        specs += [{"type": "sensor.camera.rgb", **c} for c in self._tfv6_cameras]
         specs += [
             {"type": "sensor.other.imu", "id": "IMU", "x": 0.0, "y": 0.0, "z": 0.0,
              "roll": 0.0, "pitch": 0.0, "yaw": 0.0, "sensor_tick": 0.05},
@@ -1065,6 +1079,13 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             files.append(str(path.resolve()))
         return files
 
+    def _write_tfv6(self, out_dir: Path) -> None:
+        """TransFuser's 6 cameras stitched left to right (its training order), for the TransFuser
+        perception service. Not listed in the percept's files: the driver's views are unchanged."""
+        assert self._last_input is not None
+        imgs = [np.ascontiguousarray(self._last_input[c["id"]][1][:, :, :3]) for c in self._tfv6_cameras]
+        cv2.imwrite(str(out_dir / "TFV6_rgb.jpg"), np.concatenate(imgs, axis=1), [cv2.IMWRITE_JPEG_QUALITY, 90])
+
     def _start_dense_rig(self) -> None:
         """Spawn the GT depth + instance-seg clones (carla_probe/gt_dense.py). The hero is resolved
         here only to ATTACH sensors to it; nothing read off it reaches a reply. The clones deliver
@@ -1191,6 +1212,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             names += [Path(f).name for f in self._write_cameras(out_dir, cams, 1.0, suffix="_full")]
         if self._dense_rig is not None and self.step > self._dense_rig_step:
             names += self._dense_rig.write(out_dir, cams or [c["id"] for c in self._cameras], self._frame)
+        if self._tfv6_cameras:
+            self._write_tfv6(out_dir)
         # The directory once, then bare filenames. Absolute paths repeated per camera cost ~115
         # tokens a reply and, on a track where nothing is evicted, are re-read on every later turn;
         # this is ~45. The driver joins dir + name, which its file reader needs anyway because its
