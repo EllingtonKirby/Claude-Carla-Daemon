@@ -45,7 +45,9 @@ except Exception:
     print(1, 0, 0, 0, "unknown")
 ' <<< "$info")"
         now=$(date +%s)
-        if [ "$st" = allowed ] && python3 -c "import sys; sys.exit(0 if $f < $fmax and $w < $wmax else 1)"; then
+        # allowed_warning: usage is high in some window but requests are still allowed (2026-11-26: reading
+        # it as blocked stalled a whole night). The fmax / wmax limits and quota_cap still apply.
+        if { [ "$st" = allowed ] || [ "$st" = allowed_warning ]; } && python3 -c "import sys; sys.exit(0 if $f < $fmax and $w < $wmax else 1)"; then
             echo "$(date -Is) quota ok: five_hour $f, seven_day $w"
             return 0
         fi
