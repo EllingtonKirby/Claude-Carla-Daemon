@@ -126,6 +126,23 @@ the background; this file has the current state and the open tasks.
   `sessions/ladder_plus/jobs_b3sL.txt`, stops the service and sets the cap back to 0.0. Log:
   `sessions/ladder_plus/lanes_b3sL.log`. `jobs_lib.txt` also holds a no-library control, not scheduled.
 
+## TransFuser v6 (LEAD) -- reference numbers and planned perception tool (11-26)
+
+- The user (11-26): the study is how an agentic MLLM drives and what tools it needs, not SOTA.
+  TransFuser v6 is to be used ONLY as a perception tool (boxes, BEV map with lanes and light states),
+  never its plan. Its standalone score is a reference for us, not an arm.
+- Reference run, no Claude usage: `~/workspace/tfv6_dev10.sh visiononly_resnet34` (env
+  `~/workspace/venv_lead`, Python 3.10, run with LD_LIBRARY_PATH unset; checkpoint downloaded to
+  `~/workspace/lead/outputs/checkpoints/visiononly_resnet34`, MIT licence). Results in
+  `~/workspace/lead_runs/visiononly_resnet34/<route>/checkpoint_endpoint.json`. First pass: 17569,
+  2091, 25381, 3255 at 100; 25378 at 70 (did not yield to the ambulance). The other five crashed at
+  CARLA start-up (port reuse) and were rerun with a free-port wait.
+- B5 (planned, not built): add TransFuser's 6-camera rig to the agent behind a flag, a TransFuser
+  perception service in venv_lead, and a `scene` module in driver_lib.
+- Teacher/student: rerun from driver_lib as the seed (agreed 11-26), 3 rounds per arm, offline first;
+  practice-route experiment (same-scenario Bench2Drive route before each test route) proposed.
+  Budget for both to be set after the Thursday-night B3s+L results.
+
 ## Candidate next steps (none agreed yet; ask the user)
 
 1. Suggest the §5.1 camera-mount fix (0bfa4af) and the oracle fix (6ef0435) to whoever owns the shared
