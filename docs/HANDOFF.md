@@ -349,11 +349,13 @@ With `CODE_TOOL=on`, it also exposes script editing in the private code director
 via the existing audited Python runner (§8b of the driving guide). That runner enforces the same
 file and network rules as the Claude Code arm and has the same native-extension limitations.
 
-Before driving, the launcher verifies that Codex successfully reads the protocol and calls
-`status` and is denied a read of the session metadata. The code arm also checks that an
-out-of-directory write is denied and runs the launcher’s code confinement check. A failed
-preflight ends the session before a driving command. Inspect `isolation_check.jsonl` and
-`isolation_check_stderr.log` when diagnosing these failures. Record the model, CLI version,
+Before driving, the launcher verifies that Codex reads the protocol and calls `status`.
+A separate deterministic check verifies that the same server denies reads of session
+metadata. The code arm also verifies that script writes and execution outside the private
+directory are denied, and runs the launcher’s code confinement check. A failed preflight ends
+the session before a driving command. Inspect `isolation_check.jsonl`,
+`isolation_check_stderr.log`, and `isolation_denials.jsonl` when diagnosing these failures.
+Record the model, CLI version,
 reasoning effort, prompt and document hashes, and `codex_config.toml` with the result. Codex uses
 its selected model's default reasoning effort unless `CODEX_REASONING_EFFORT` is set.
 

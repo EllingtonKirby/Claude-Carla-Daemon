@@ -1,10 +1,11 @@
 import json
 import os
 import sys
+from argparse import Namespace
 
 import pytest
 
-from carla_probe.codex_driver import DriverTools, drive, verify_preflight
+from carla_probe.codex_driver import DriverTools, drive, verify_denials, verify_preflight
 
 
 def test_driver_reads_only_returned_artifacts(tmp_path):
@@ -54,17 +55,24 @@ def test_preflight_requires_carla_tool_evidence(tmp_path):
 
     transcript = tmp_path / "isolation_check.jsonl"
     rows = [
-        event("read", {"path": str(tmp_path / "session.json")}, "Denied: private"),
         event("read", {"path": "protocol"}, "# Protocol"),
         event("probe", {"command": "status"}, '{"ok":true}'),
         {"type": "turn.completed"},
     ]
     transcript.write_text("\n".join(map(json.dumps, rows)))
-    verify_preflight(transcript, code=False)
+    verify_preflight(transcript)
     rows.append({"type": "item.completed", "item": {"type": "command_execution"}})
     transcript.write_text("\n".join(map(json.dumps, rows)))
     with pytest.raises(ValueError, match="unexpected tool"):
-        verify_preflight(transcript, code=False)
+        verify_preflight(transcript)
+
+
+def test_broker_preflight_denials(tmp_path):
+    code = tmp_path / "code"
+    code.mkdir()
+    (tmp_path / "session.json").write_text('{"secret":"private metadata"}')
+    verify_denials(Namespace(session=tmp_path, code=code, addr="127.0.0.1:8790", perception=""))
+    assert not (tmp_path / "outside.py").exists()
 
 
 def test_drive_rejects_unexpected_tool(tmp_path):

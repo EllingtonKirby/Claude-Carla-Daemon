@@ -168,12 +168,16 @@ def serve(driver):
         print(json.dumps(reply), flush=True)
 
 
-def config_for(args, preflight=False):
+def server_args(args, preflight=False):
     command = ["-m", "carla_probe.codex_driver", "serve", str(args.session), args.addr]
     if args.code:
         command.extend(["--code", str(args.code), "--perception", args.perception])
     if preflight:
         command.append("--preflight")
+    return command
+
+
+def config_for(args, preflight=False):
     # JSON strings and string arrays are also valid TOML for these paths and arguments.
     return f"""web_search = "disabled"
 cli_auth_credentials_store = "file"
@@ -191,7 +195,7 @@ skip_host_skill_discovery = true
 
 [mcp_servers.carla]
 command = {json.dumps(sys.executable)}
-args = {json.dumps(command)}
+args = {json.dumps(server_args(args, preflight))}
 required = true
 default_tools_approval_mode = "approve"
 tool_timeout_sec = 300
@@ -202,15 +206,39 @@ PYTHONDONTWRITEBYTECODE = "1"
 """
 
 
-def verify_preflight(path, code):
-    """Check actual completed tool calls, including their success/denial results."""
-    expected = {
-        ("read", str(path.parent / "session.json")): False,
-        ("read", "protocol"): True,
-        ("probe", "status"): True,
-    }
-    if code:
-        expected[("write_script", "../outside.py")] = False
+def verify_denials(args):
+    """Make negative checks against the same stdio server without relying on model cooperation."""
+    calls = [("read", {"path": str(args.session / "session.json")})]
+    if args.code:
+        calls.extend([
+            ("write_script", {"path": "../outside.py", "source": "pass"}),
+            ("run_script", {"path": "../outside.py"}),
+        ])
+    requests = [
+        {"jsonrpc": "2.0", "id": index, "method": "tools/call",
+         "params": {"name": name, "arguments": fields}}
+        for index, (name, fields) in enumerate(calls)
+    ]
+    result = subprocess.run(
+        [sys.executable, *server_args(args, preflight=True)],
+        input="".join(json.dumps(request) + "\n" for request in requests),
+        stdout=subprocess.PIPE, text=True, check=True, timeout=20,
+        cwd=REPO, env={"PYTHONPATH": str(REPO), "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    (args.session / "isolation_denials.jsonl").write_text(result.stdout)
+    replies = [json.loads(line) for line in result.stdout.splitlines()]
+    if len(replies) != len(requests):
+        raise ValueError("missing preflight broker replies")
+    for index, reply in enumerate(replies):
+        response = reply["result"]
+        if (reply["id"] != index or not response.get("isError")
+                or not response["content"][0]["text"].startswith("Denied:")):
+            raise ValueError(f"preflight broker did not deny {calls[index][0]}")
+
+
+def verify_preflight(path):
+    """Confirm the CLI connected to the broker and used only expected tools."""
+    expected = {("read", "protocol"), ("probe", "status")}
     observed = set()
     completed = False
     for line in path.read_text().splitlines():
@@ -223,22 +251,21 @@ def verify_preflight(path, code):
         if item["type"] in {"agent_message", "reasoning"}:
             continue
         if (item["type"] != "mcp_tool_call" or item["server"] != "carla"
-                or item["tool"] not in {"read", "probe", "write_script"}):
+                or item["tool"] not in {"read", "probe"}):
             raise ValueError(f"unexpected tool in Codex preflight: {item['type']}")
         arguments = item["arguments"]
         key = item["tool"], arguments.get("command", arguments.get("path"))
         result = item.get("result") or {}
         contents = result.get("content", [])
         texts = [block.get("text", "") for block in contents if block.get("type") == "text"]
-        denied = bool(texts) and texts[0].startswith("Denied:")
-        if not denied and (item["status"] != "completed" or not texts):
+        if item["status"] != "completed" or not texts:
             raise ValueError(f"tool did not return a verified preflight result: {item['tool']}")
         if item["tool"] == "probe" and not json.loads(texts[0])["ok"]:
             raise ValueError("probe status failed")
-        if key not in expected or expected[key] == denied:
+        if key not in expected:
             raise ValueError(f"unexpected isolation result for {key!r}")
         observed.add(key)
-    if not completed or observed != set(expected):
+    if not completed or observed != expected:
         raise ValueError(f"missing isolation preflight evidence: {observed!r}")
 
 
@@ -293,19 +320,18 @@ def run(args):
         if args.effort:
             cmd[1:1] = ["-c", f"model_reasoning_effort={json.dumps(args.effort)}"]
 
+        verify_denials(args)
         check_path = args.session / "isolation_check.jsonl"
-        check = f"""This is an isolation preflight; the simulator must remain paused.
-Use carla.read on {args.session / 'session.json'} and then on protocol. Use carla.probe
-with command status. Try each call and then end the turn. Use no driving commands.
+        check = """This is an isolation preflight; the simulator must remain paused.
+Use carla.read on protocol and carla.probe with command status. End the turn after both calls.
+Use no driving commands.
 """
-        if args.code:
-            check += "Also try carla.write_script with path ../outside.py and source pass.\n"
         (codex_home / "config.toml").write_text(config_for(args, preflight=True))
         with check_path.open("w") as out, (args.session / "isolation_check_stderr.log").open("w") as err:
             if subprocess.run(cmd, input=check, text=True, stdout=out, stderr=err,
                               cwd=work, env=env, timeout=180).returncode:
                 raise ValueError("Codex preflight execution failed")
-        verify_preflight(check_path, args.code)
+        verify_preflight(check_path)
         metadata_path = args.session / "driver.json"
         metadata = json.loads(metadata_path.read_text())
         config = config_for(args)
@@ -340,7 +366,7 @@ def main():
         return 0
     try:
         return run(args)
-    except (ValueError, OSError, KeyError, subprocess.TimeoutExpired) as error:
+    except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         print(f"    Codex driver failed: {error}", file=sys.stderr)
         return 1
 
