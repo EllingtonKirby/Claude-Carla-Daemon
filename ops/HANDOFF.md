@@ -17,16 +17,35 @@ the background; this file has the current state and the open tasks.
 - `privileged-v2` → base `sensors-control-knobs` (a fork copy of upstream `valeoai/sensors-control-knobs`).
   Don't use the fork's `main` as base: it is far behind (82 commits, vendored fail2drive).
   `privileged-ladder` is an ancestor of `privileged-v2` and needs no separate PR.
+- `strong-perception` → base `privileged-v2` (PR #3, stacked): the strong perception backend.
 - `oracle-frames-deny-fix` → base `sensors-control-knobs`: one Sep 21 commit (6ef0435, BLUE oracle
   permissions) that sat on local `main` and was never pushed. Its parent is upstream main 3eb6811,
   which the base contains, so the PR shows only that commit. Upstream main is where it belongs.
 
-## Run state: everything is stopped
+## Run state (2026-11-25 05:30 UTC): everything is stopped
 
-- No lanes are running. Check with `ps -eo pid,args | grep -E "[l]anes3|[r]un_eval"`.
-- The last session, B2i+ 28198, finished: Completed, DS 100. `classify_sessions.py`: 96 valid, 4 cutoff.
-- `~/workspace/quota_cap` = `0.0` until 2026-11-26 08:00 UTC: every lane blocks. Raise it or delete it
-  only when the user says to run.
+- Nothing is running. `~/workspace/quota_cap` = `0.0` until 2026-11-26 08:00 UTC: Wednesday night
+  off (the user's call). seven_day was 0.65 at the last gate (00:04 UTC on 11-25), ~0.67 after the
+  last three drives. The weekly window resets ~Friday midday.
+- Done overnight 11-24/25, all 20 sessions valid (`classify_sessions.py` now includes `a0plus`):
+  - A0+ (`sessions/a0plus/a1`): privileged, plus controller, no extras. Mean 96.4 over 10 routes.
+  - B3s+ (`sessions/ladder_plus/B3s_strong_perc/a1`): cameras + code tool + strong perception. Mean
+    81.9 over 10 routes. Every driver called the service: 241 of 462 script runs used it (5-44 per drive).
+- Nothing is queued. Next runs need the user's go and a new cap.
+
+## Strong perception (branch `strong-perception`, PR #3)
+
+- Offline check, no Claude usage: `tools/eval_dense_estimators.py` on the 223 dense route scenes in
+  `ccd_exp/sessions/scenes` (results in `sessions/perception_eval/{gt,legacy,strong}.json`).
+  Depth |rel| median at 0-10 / 10-20 / 20-40 m: legacy 1.31 / 0.93 / 0.45, strong 0.07 / 0.09 / 0.18.
+  Actor recall (median position error) at the same bands: legacy 0.69 (2.5 m) / 0.51 (3.9 m) /
+  0.28 (3.5 m); strong 0.94 (1.5 m) / 0.89 (1.7 m) / 0.59 (1.9 m); the same pipeline on ground truth
+  0.97 (1.4 m) / 0.96 (1.7 m) / 0.68 (1.8 m). Strong is close to the dense ground truth, so B3s+ is
+  expected near B2+ (81.6) if drivers use it. Only 12 pedestrians in the scenes: no pedestrian verdict.
+- Env: `~/workspace/venv_perception2` (Python 3.12, `scripts/setup_perception2.sh`). The HF token
+  (SAM 3 access) is in `~/.cache/huggingface/token` and `~/mack/ekirby/.hf_cluster/token`; never commit
+  it. `uv python install 3.11 3.12` on a fresh container: both perception venvs link to uv's interpreters.
+- ~0.67 s per image for depth + six SAM 3 prompts on the L40S; 9 GB VRAM.
 - Not run (budget cap reached): B0i+ 25378, B0i+ 3514, B2i+ 3514. Their `.claim` folders were set by
   hand, and each is logged in `sessions/ladder_plus/RELAUNCHES.md`.
 
@@ -49,7 +68,7 @@ the background; this file has the current state and the open tasks.
 - Worktrees:
   - `~/workspace/ccd_base`: A0 baseline, detached at bd0bb10.
   - `~/workspace/ccd_exp`: branch `privileged-ladder`.
-  - `~/workspace/ccd_priv2`: branch `privileged-v2`, the current one.
+  - `~/workspace/ccd_priv2`: branch `strong-perception` (stacked on `privileged-v2`), the current one.
 - Env: `source ~/workspace/hornet_envrc`. CARLA 0.9.15 needs `SDL_VIDEODRIVER=dummy`. Tests:
   `cd ~/workspace/ccd_priv2 && .venv/bin/python -m pytest -q tests` (269 pass).
 - Operator scripts live in `~/workspace/` and are mirrored in `ops/` (README there).
@@ -76,7 +95,9 @@ the background; this file has the current state and the open tasks.
 | B0i+ (B0g+ + info extras) | 60.9 on 8 routes (B0g+ 65.0 on the same 8) |
 | B2+ (GT depth/masks + code) | 81.6 |
 | B2i+ (B2+ + info extras) | 84.8 on 9 routes (B2+ 79.5 on the same 9) |
+| B3s+ (cameras + code + Depth Pro 2 / SAM 3 service) | 81.9 |
 | A0 (privileged) | 88.3 |
+| A0+ (A0 on the plus controller, no extras) | 96.4 |
 | A1 Privileged+ (10 routes x 3 attempts) | 98.8, 29/30 at 100 |
 
 - One attempt per route has a median spread of ~27 DS, so camera-arm differences under ~10 are noise.

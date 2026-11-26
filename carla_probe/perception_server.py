@@ -35,7 +35,7 @@ import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -63,8 +63,14 @@ def _decode_image(b64: str) -> np.ndarray:
     return img[..., ::-1].copy()   # RGB
 
 
+VEHICLE_PROMPTS = ["car", "truck", "bus", "pedestrian", "bicycle", "motorcycle"]
+
+
 class Models:
+    """Legacy backend: Depth Anything V2 (metric outdoor) + SAM 3 via transformers or Mask2Former."""
+
     def __init__(self, device: str, segmenter: str) -> None:
+        self.depth_model_name = DEPTH_MODEL
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
         self.device = device
         self.lock = threading.Lock()
@@ -90,7 +96,7 @@ class Models:
             self.segment_model_name = PANOPTIC_MODEL
 
     @torch.inference_mode()
-    def depth(self, rgb: np.ndarray) -> np.ndarray:
+    def depth(self, rgb: np.ndarray, f_px: Optional[float] = None) -> np.ndarray:
         with self.lock:
             inputs = self.depth_proc(images=rgb, return_tensors="pt").to(self.device)
             pred = self.depth_model(**inputs).predicted_depth          # 1 x h x w, metres
@@ -105,7 +111,7 @@ class Models:
         segs: List[Dict[str, Any]] = []
         with self.lock:
             if self.open_vocab:
-                for prompt in prompts or ["car", "truck", "bus", "pedestrian", "bicycle", "motorcycle"]:
+                for prompt in prompts or VEHICLE_PROMPTS:
                     inputs = self.sam_proc(images=rgb, text=prompt, return_tensors="pt").to(self.device)
                     out = self.sam(**inputs)
                     res = self.sam_proc.post_process_instance_segmentation(
@@ -142,7 +148,62 @@ class Models:
                 "bbox": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]}
 
 
-def make_handler(models: Models):
+class StrongModels:
+    """Strong backend: Apple Depth Pro 2 (metric depth, sharp edges) + Meta SAM 3 (open-vocabulary
+    instance masks), each from its own package (third_party/ml-depth-pro-2, third_party/sam3; see
+    scripts/setup_perception2.sh). Needs Python >= 3.12, so it runs from ~/workspace/venv_perception2.
+    SAM 3 weights are gated on the Hugging Face hub: the token in ~/.cache/huggingface/token must have
+    access to facebook/sam3. Depth Pro 2 weights are for research use only (its LICENSE_MODEL).
+
+    Depth takes the camera's focal length in pixels when the caller knows it (every CARLA camera
+    does: frames/cameras.json); otherwise Depth Pro 2 estimates it from the image.
+    """
+
+    def __init__(self, device: str, depth_preset: str = "depthpro2-h", sam_threshold: float = 0.5) -> None:
+        from depth_pro_2 import create_model_and_transforms
+        from sam3.model.sam3_image_processor import Sam3Processor
+        from sam3.model_builder import build_sam3_image_model
+        self.device = device
+        self.lock = threading.Lock()
+        self.dp, self.dp_transform = create_model_and_transforms(depth_preset, device=device)
+        self.dp.eval()
+        self.sam = build_sam3_image_model(device="cpu").to(device).eval()   # its builder moves only for device == "cuda"
+        self.sam_proc = Sam3Processor(self.sam, device=device, confidence_threshold=sam_threshold)
+        self.depth_model_name = f"apple/{depth_preset}"
+        self.segment_model_name = "facebook/sam3"
+        self.open_vocab = True
+
+    @torch.inference_mode()
+    def depth(self, rgb: np.ndarray, f_px: Optional[float] = None) -> np.ndarray:
+        with self.lock:
+            pred = self.dp.infer(self.dp_transform(rgb), f_px=f_px)
+            d = pred["depth"].float()
+        return torch.nan_to_num(d, posinf=1000.0).clamp(0, 1000.0).cpu().numpy()
+
+    @torch.inference_mode()
+    def segment(self, rgb: np.ndarray, prompts: List[str]) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+        from PIL import Image
+        h, w = rgb.shape[:2]
+        labels = np.zeros((h, w), dtype=np.int32)
+        segs: List[Dict[str, Any]] = []
+        with self.lock, torch.autocast("cuda", dtype=torch.bfloat16):
+            state = self.sam_proc.set_image(Image.fromarray(rgb))   # encode once, prompt many times
+            for prompt in prompts or VEHICLE_PROMPTS:
+                self.sam_proc.reset_all_prompts(state)
+                out = self.sam_proc.set_text_prompt(prompt=prompt, state=state)
+                order = torch.argsort(out["scores"], descending=True)
+                for i in order.tolist():
+                    m = out["masks"][i, 0].cpu().numpy().astype(bool)
+                    m &= labels == 0                       # higher-scoring masks keep shared pixels
+                    if m.sum() < 8:
+                        continue
+                    sid = len(segs) + 1
+                    labels[m] = sid
+                    segs.append(Models._seg(sid, prompt, float(out["scores"][i]), m))
+        return labels, segs
+
+
+def make_handler(models):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             pass
@@ -157,7 +218,7 @@ def make_handler(models: Models):
 
         def do_GET(self):
             if self.path == "/health":
-                self._send(200, {"ok": True, "depth_model": DEPTH_MODEL, "segment_model": models.segment_model_name,
+                self._send(200, {"ok": True, "depth_model": models.depth_model_name, "segment_model": models.segment_model_name,
                                  "open_vocabulary": models.open_vocab})
             else:
                 self._send(404, {"ok": False, "error": "unknown path"})
@@ -168,7 +229,7 @@ def make_handler(models: Models):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 rgb = _decode_image(body["image_b64"])
                 if self.path == "/depth":
-                    d = models.depth(rgb)
+                    d = models.depth(rgb, f_px=body.get("f_px"))
                     self._send(200, {"ok": True, "depth_npy_b64": _npy_b64(d.astype(np.float16)), "shape": list(d.shape),
                                      "ms": round((time.time() - t0) * 1000, 1)})
                 elif self.path == "/segment":
@@ -187,11 +248,14 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8795)
     ap.add_argument("--device", default="cuda:0")
-    ap.add_argument("--segmenter", default="auto", choices=["auto", "sam3", "panoptic"])
+    ap.add_argument("--backend", default="legacy", choices=["legacy", "strong"],
+                    help="legacy = Depth Anything V2 + Mask2Former/SAM 3 (transformers); strong = Depth Pro 2 + SAM 3")
+    ap.add_argument("--segmenter", default="auto", choices=["auto", "sam3", "panoptic"], help="legacy backend only")
+    ap.add_argument("--depth-preset", default="depthpro2-h", help="strong backend only: depthpro2-{s,b,l,h}")
     a = ap.parse_args()
-    models = Models(a.device, a.segmenter)
+    models = StrongModels(a.device, a.depth_preset) if a.backend == "strong" else Models(a.device, a.segmenter)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(models))
-    print(f"[perception] serving on {a.host}:{a.port} depth={DEPTH_MODEL} segment={models.segment_model_name}", flush=True)
+    print(f"[perception] serving on {a.host}:{a.port} depth={models.depth_model_name} segment={models.segment_model_name}", flush=True)
     srv.serve_forever()
 
 

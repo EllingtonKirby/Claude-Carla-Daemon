@@ -340,13 +340,14 @@ models (Bench2Drive-eligible: they see only your cameras). From a script:
 ```python
 from carla_probe.perception_client import PerceptionClient
 pc = PerceptionClient()                               # address from the environment
-depth = pc.depth(path)                                # HxW float32, metres along the optical axis
+depth = pc.depth(path, f_px=fx)                       # HxW float32, metres along the optical axis
 labels, segments = pc.segment(path, prompts=["car", "pedestrian", "bicycle", "truck"])
 # labels: HxW int32 segment id (0 = none); segments: [{"id", "label", "score", "area", "bbox": [x0,y0,x1,y1]}]
 ```
 
 `path` is a frame file a percept returned; outputs are at that image's resolution, so use the
-matching intrinsics. `pc.info()` says which models are loaded and whether `segment` honours free
+matching intrinsics. Pass that image's `fx` from `cameras.json` as `f_px`: a model that would
+otherwise guess the field of view then uses the true one (a model that does not need it ignores it). `pc.info()` says which models are loaded and whether `segment` honours free
 `prompts` (an open-vocabulary model) or returns a fixed label set. Monocular metric depth is
 typically good to ~5-10% at 10-30 m and worse far away or on glass; prefer the median over an
 object's mask to any single pixel.
