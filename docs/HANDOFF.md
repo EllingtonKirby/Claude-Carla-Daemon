@@ -1,8 +1,8 @@
-# Handoff: set up, validate, run and record an eval
+# Operator handoff
 
 This is the one document to read before operating this repo. It covers what the repo is for (§1),
-setup (§2), validating an install (§3), running an eval (§4), what a run records and how to
-analyze it (§5), and troubleshooting (§6). Deeper references: `docs/OPERATOR_GUIDE.md` (the
+setup (§2), validating an install (§3), running an eval and choosing first experiments (§4),
+what a run records and how to analyze it (§5), and troubleshooting (§6). Deeper references: `docs/OPERATOR_GUIDE.md` (the
 driver's manual), `docs/DESIGN.md` (internals), `benchmark/PROTOCOL.md` (benchmark rules) and
 `docs/JOURNAL.md` (what we have measured so far, and the measurement lessons from it — read §1
 before designing an experiment, and add to it after running one).
@@ -16,7 +16,8 @@ drivers can read it. Keep run results in `sessions/` (gitignored) or outside the
 
 ## 1. What this repo is for
 
-It measures how well an LLM drives a car in closed loop, scored by an unmodified driving benchmark.
+It measures how well a coding agent drives a car in closed loop using the leaderboard's
+standard scoring rules.
 
 - **Simulator and scoring.** [CARLA](https://carla.org) 0.9.15 runs one route: a fixed path through
   a town with traffic and one scripted scenario. The leaderboard scores the drive: **DS**
@@ -30,21 +31,23 @@ It measures how well an LLM drives a car in closed loop, scored by an unmodified
     in Town13, on **its own** CARLA build with 30 novel assets. Each `Generalization_*` route is a
     shifted version of an in-distribution `Base_*` reference, and the headline number is the
     **drop** between them, not either absolute score.
-- **The daemon.** `carla_probe/agent.py` is the leaderboard's agent. The leaderboard steps CARLA
-  synchronously at 20 Hz and calls the agent every tick, and the agent blocks on a TCP socket until
-  it gets a command. So the world is **frozen while the driver thinks**, and time advances only
-  through the driver's commands (mainly `apply_plan`: ego-frame waypoints tracked by a PID
-  controller for N ticks). A route has a 4000-tick (200 s) budget.
+- **The launch path.** `scripts/run_session.sh` resolves one route and writes a config snapshot,
+  starts CARLA off-screen, and launches the selected leaderboard evaluator with
+  `carla_probe/agent.py` as its agent. The leaderboard steps CARLA synchronously at 20 Hz. The
+  probe blocks between commands on a TCP socket, so the world is **frozen while the driver thinks**.
+  `apply_plan` advances a bounded number of ticks while a PID controller follows ego-frame
+  waypoints. Bench2Drive caps a route at 4000 ticks (200 simulated seconds). Fail2Drive uses its
+  own stock timeout.
 - **The driver** talks to the daemon with `python -m carla_probe.client CMD key=value ...`
-  (one JSON reply per command). No learned policy is involved: every control decision is the
-  driver's.
-- **Two tracks**, enforced by the daemon and never averaged together:
+  (one JSON reply per command). The default driver chooses each plan. The optional `VLA=on`
+  configuration gives it a learned policy as another driving command.
+- **Three tracks**, enforced by the daemon and reported separately:
   - `sensors`: only inputs a Bench2Drive SENSORS-track agent gets (cameras, speedometer, IMU,
     GNSS, the sparse route plan). The main benchmark.
   - `privileged`: the ground-truth scene (actors, lanes, lights, signs, live score). Useful for
     development and as an upper bound; comparable only to privileged/expert agents.
-
-  A result is therefore a (benchmark, track) pair -- four buckets, none averaged with another.
+  - `dense`: the sensors view with ground-truth depth and instance segmentation. Use it to
+    measure what pixel-level ground truth contributes.
 - **Route sets** (`benchmark/routes/`). Bench2Drive: `smoke.txt` (install check, not a benchmark),
   `standard.txt` (the pinned single-route benchmark), `dev10.txt` (a broader 10-route set); ids map
   to `routes/bench2drive220/route_<id>.xml`. Fail2Drive: `f2d_pair.txt` (2), `f2d_smoke.txt` (8)
@@ -210,8 +213,8 @@ daemon answers -- much longer than Town03. Raise `--wait` rather than assuming a
 - One fresh session per route, one attempt; crashed or aborted runs count as failures (DS 0).
 - Every driving command carries `why="..."`, which the daemon enforces and logs. Justifications are
   reviewed as part of the result (§5.3).
-- Fixed settings: `TM_SEED=0`, default `carla_probe/config.yaml` except `access`, `AGENT_MAX_TICKS`
-  unset. Report any deviation.
+- Fixed settings use `TM_SEED=0`, default `carla_probe/config.yaml` except `access`, and stock
+  route budgets. Leave the time-limit overrides listed in the protocol unset and report deviations.
 - **How runs are paid for.** The driver is `claude -p`, so a run is billed to whatever the `claude`
   CLI is logged in to, normally a Claude subscription. A subscription-backed run's
   `total_cost_usd` is then an API-equivalent figure computed at list price, not a bill: what binds
@@ -219,15 +222,16 @@ daemon answers -- much longer than Town03. Raise `--wait` rather than assuming a
 - The driver uses only the probe protocol: no route XMLs, scenario or simulator code, logs, config
   edits or human hints. On the sensors track it may open only files whose paths the daemon returns.
 - Traffic is seeded but not bit-exact, and it reacts to the ego: run several attempts per route
-  when comparing models. Measured on the sensors dev set, the median per-route spread over three
-  attempts at one commit is **27 DS points**, so a one-attempt-each-way per-route delta is not a
+  when comparing models, with the count fixed before launching. On the sensors dev set, the
+  median per-route spread over three attempts at one commit was **27 DS points**, so a
+  one-attempt-each-way per-route delta is not a
   result — `docs/JOURNAL.md` §1.1 has the numbers and what they imply for experiment design.
 
 ### 4.2 Procedure: `scripts/run_eval.sh`
 
 ```bash
 source scripts/env.sh
-bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> > /tmp/eval_<ROUTE_ID>.out 2>&1 &
+bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged|dense> <MODEL> > /tmp/eval_<ROUTE_ID>.out 2>&1 &
 # e.g.  bash scripts/run_eval.sh 2091 sensors claude-opus-5 > /tmp/eval_2091.out 2>&1 &
 ```
 
@@ -279,9 +283,62 @@ Notes:
 - **Parallel runs:** one GPU per session (`GPU_RANK`), with distinct `CARLA_PORT` (stride ≥ 10),
   `PROBE_PORT` and session dirs. Throughput is dominated by camera rendering, so a second session
   on the same GPU slows both.
-- **Interactive (non-benchmark) use:** open Claude Code in the repo and ask it to drive a route. The
-  `drive-carla` skill launches the session itself. That driver is *not* isolated, so don't count
-  such runs as benchmark results.
+
+### 4.3 First experiments
+
+1. **Validate the installation.** Run the offline suite (§2), then the privileged and sensors
+   smoke checks (§3.1–3.2) on Bench2Drive route `25378`. Check that the session reaches step 0
+   with the requested access, observations return usable images, `apply_plan` advances simulation
+   time, and the evaluator writes `result.json` and exits.
+2. **Establish a route-following baseline and check the scored launcher.** On the same commit
+   and simulator install, run these sequentially on Bench2Drive route `2091`. Replace the model
+   string with an exact model ID available to the authenticated Claude Code CLI.
+
+   ```bash
+   DRIVER=baseline_route bash scripts/run_eval.sh 2091 sensors route-follower
+   bash scripts/run_eval.sh 2091 sensors '<claude-model-id>'
+   ```
+
+   The route follower sends sparse route points at a constant speed, without judging traffic or
+   lights. Keep the default controller and seed, optional assistance off, and the Claude
+   isolation check on. Use `python tools/summarize_results.py <session-dir> ...` and inspect any
+   aborts before scheduling a larger run. Treat this single route as a pipeline check.
+3. **Measure driving across routes.** Use `benchmark/routes/dev10.txt` with three independent
+   sessions per route per arm. Start with the sensors track and the route follower and Claude
+   configurations above. Record every scheduled attempt, including aborts. Report DS, RC, IS,
+   infractions, commands, wall time, and the per-route spread with the settings in
+   [the reporting protocol](../benchmark/PROTOCOL.md#reporting). Analyze privileged or dense
+   variants separately. A Codex-versus-Claude score comparison needs an isolated Codex launcher
+   with equivalent access and a verified preflight.
+4. **Validate generalization separately.** Once the setup is stable, validate the custom
+   Fail2Drive build on both routes in `benchmark/routes/f2d_pair.txt` (§3.3). Report paired
+   Base-to-Generalization change using `tools/f2d_score.py`. Reserve the held-out routes for
+   evaluation.
+
+### 4.4 Interactive driving with Codex or Claude Code
+
+After [setup](#2-setup), start the coding agent in this repo and ask it to drive Bench2Drive
+route `25378` on the sensors track. The same shell client works in either agent. Run the launcher
+in the background and note the session directory it prints.
+
+```bash
+BENCHMARK=bench2drive ACCESS=sensors bash scripts/run_session.sh 25378
+```
+
+From a second shell at the repo root, connect with the repo's interpreter. With a custom
+`PROBE_PORT`, put `127.0.0.1:<port>` before `--wait` or the command name.
+
+```bash
+.venv/bin/python -m carla_probe.client --wait 600 status
+.venv/bin/python -m carla_probe.client percept
+```
+
+Confirm `status.access`. Read [the drive loop](OPERATOR_GUIDE.md#6-the-drive-loop) and
+[the sensors technique](OPERATOR_GUIDE.md#8-driving-on-the-sensors-track). Open the returned
+camera images using the agent's image viewer, plan from the current scene, and advance with
+`apply_plan` and an observation-based `why=`. Repeat until `route_end` or the connection closes.
+Follow the driving rules in [the protocol](../benchmark/PROTOCOL.md), and summarize the session
+afterwards. This workflow is for debugging and practice. Scored evaluations use §4.2.
 
 ## 5. Recording and analysis
 

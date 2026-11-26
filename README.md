@@ -1,6 +1,7 @@
-# claude_carla_daemon
+# CARLA coding-agent benchmark
 
-Benchmark how well an LLM agent (Claude) drives a car in closed loop.
+Measure how well coding agents drive CARLA routes in closed loop. Start with
+[AGENTS.md](AGENTS.md) for Codex or Claude Code, or go straight to [setup](docs/HANDOFF.md#2-setup).
 
 The **probe daemon** is a CARLA leaderboard agent that pauses the simulation every tick and waits
 for JSON commands on a socket. The agent reads the scene, decides, and advances time with
@@ -16,14 +17,15 @@ Two benchmarks, selected with `BENCHMARK=` and never pooled:
   route is a shifted version of an in-distribution `Base_*` reference, and the headline number is
   the **drop** between them, not either absolute score.
 
-Two tracks, enforced by the daemon:
+Three tracks are enforced by the daemon and reported separately.
 - **`sensors`**: only SENSORS-track-eligible inputs. Cameras, speedometer, IMU, GNSS and the
   leaderboard's route plan; the ego pose is estimated from GNSS + compass.
 - **`privileged`**: the ground-truth scene. Actors, lanes, traffic lights, stop signs, speed limit
   and a live score.
+- **`dense`**: the sensors view plus ground-truth depth and instance segmentation.
 
 ```
-Claude ──(carla_probe.client, JSON lines)──▶ ProbeAgent ◀─run_step─ leaderboard (sync) ◀─rpc─▶ CARLA
+Driver ──(carla_probe.client, JSON lines)──▶ ProbeAgent ◀─run_step─ leaderboard (sync) ◀─rpc─▶ CARLA
 ```
 
 ## Requirements
@@ -70,19 +72,23 @@ python tools/summarize_results.py sessions/*      # per route, grouped by benchm
 python tools/f2d_score.py sessions/f2d_*          # Fail2Drive: Base vs Generalization, and the drop
 ```
 
-## Letting Claude drive
+## Run an evaluation
 
-**Benchmark runs** use an isolated, headless driver that can't read logs or scores:
+The scored launcher runs an isolated, headless Claude Code driver by default. Install and
+authenticate the Claude CLI, then select an available model ID. The route-following baseline
+uses the same scoring pipeline and needs no model account.
 
 ```bash
-bash scripts/run_eval.sh 2091 sensors claude-opus-5   # route, track, model; see docs/HANDOFF.md §4
-BENCHMARK=fail2drive bash scripts/run_eval.sh Base_Animals_0075 sensors claude-opus-5
+DRIVER=baseline_route bash scripts/run_eval.sh 2091 sensors route-follower
+bash scripts/run_eval.sh 2091 sensors '<claude-model-id>'
 ```
 
-**Interactive runs:** open Claude Code in this repo and ask it to drive a route. The `drive-carla`
-skill (`.claude/skills/drive-carla/SKILL.md`) covers the launch, the observe → plan → advance loop,
-and the rules in [`benchmark/PROTOCOL.md`](benchmark/PROTOCOL.md). That driver is not isolated, so
-don't count its runs as benchmark results.
+Follow [the experiment sequence](docs/HANDOFF.md#43-first-experiments) for smoke tests, repeated
+Bench2Drive runs, and the separate Fail2Drive check.
+
+For practice and debugging, use [the interactive workflow](docs/HANDOFF.md#44-interactive-driving-with-codex-or-claude-code)
+from either Codex or Claude Code. Codex can also launch and analyze scored runs as the operator.
+Scored Codex driving requires a separate driver adapter and isolation check.
 
 ## Docs
 
