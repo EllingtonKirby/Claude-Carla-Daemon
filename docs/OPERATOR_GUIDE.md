@@ -237,6 +237,13 @@ outlive the burst.
 
 - **The scene exists only in the cameras** — which is why §6's look-every-decision rule is not
   advice here but the whole of your perception.
+- **Your lane estimate is noisy; your steering should not be.** From cameras, where you think the
+  lane centre is moves by tens of centimetres from one look to the next even when the car has not
+  moved. Re-aiming every plan at the latest estimate makes the car weave: each correction is an S
+  (turn in, then straighten), and the next estimate starts another. Keep your lateral target unless
+  the estimate has moved by more than ~0.3 m, or has stayed off by the same amount for two looks in a
+  row, and spread a correction over distance: roughly 15 m of travel per 0.5 m of shift. §7's "put
+  the points where the car should be" still holds; this is about not chasing noise while doing it.
 - **Distances from images.** The JPGs may be written at a reduced resolution, so work from the image
   you actually opened rather than from a fixed pixel count. `CAM_FRONT` has a 110° horizontal FOV,
   which makes its focal length ≈ 0.35 × the image width W in pixels. An object of real height H

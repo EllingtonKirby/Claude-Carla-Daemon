@@ -106,6 +106,43 @@ the background; this file has the current state and the open tasks.
   or planning tools. Driver debriefs' causal claims are leads, not proof (the camera-mount fix did not
   lift B0).
 
+## Driver perception library (branch `driver-lib`, PR #4) -- built 11-25, not yet driven
+
+- Agreed with the user 11-25: present TOOLS, not solutions. No harness path smoothing (rejected as
+  too much of a hint). Built instead: `carla_probe/driver_lib/` (camera geometry, object footprints
+  from the perception service, lane markings + LaneTracker, zoom), installed per session with
+  `CODE_LIB=carla_probe/driver_lib`; and an OPERATOR_GUIDE §8 rule on not chasing lane-estimate noise
+  (applies to every camera run from now on).
+- Why: camera arms flip steering ~50 times per 10 s of straight cruising (privileged 1-5); each new
+  camera plan moves the path sideways by a median 14-24 cm (privileged 1-4 cm). The library also
+  tests token savings: drivers rewrote ~300-390 lines of perception code per drive.
+- Offline (tools/eval_driver_lib.py, sessions/perception_eval/driver_lib.json): footprints 77%
+  recall, 0.97 m nearest-point error, 0.47 m sideways (Depth Pro median point: 1.85 m); lanes found
+  in ~60% of frames, centre within 0.15 m when found; tracker halves jitter, poor when coasting.
+- The user (11-25): no strict A/B needed. Run only B3s+L (new guide + library), 10 routes, on
+  Thursday night 11-26, and compare tokens with the earlier B3s+/B2+ runs. Scheduled:
+  `~/workspace/b3sL_thursday.sh` (running, sleeps until 17:55 UTC 11-26; cancel with
+  `pkill -f b3sL_thursday.sh`) sets cap 0.95 (raised from 0.80 by the user on 11-26) until 11-27 12:00 UTC, starts the strong service, runs
+  `sessions/ladder_plus/jobs_b3sL.txt`, stops the service and sets the cap back to 0.0. Log:
+  `sessions/ladder_plus/lanes_b3sL.log`. `jobs_lib.txt` also holds a no-library control, not scheduled.
+
+## TransFuser v6 (LEAD) -- reference numbers and planned perception tool (11-26)
+
+- The user (11-26): the study is how an agentic MLLM drives and what tools it needs, not SOTA.
+  TransFuser v6 is to be used ONLY as a perception tool (boxes, BEV map with lanes and light states),
+  never its plan. Its standalone score is a reference for us, not an arm.
+- Reference run, no Claude usage: `~/workspace/tfv6_dev10.sh visiononly_resnet34` (env
+  `~/workspace/venv_lead`, Python 3.10, run with LD_LIBRARY_PATH unset; checkpoint downloaded to
+  `~/workspace/lead/outputs/checkpoints/visiononly_resnet34`, MIT licence). Results in
+  `~/workspace/lead_runs/visiononly_resnet34/<route>/checkpoint_endpoint.json`. First pass: 17569,
+  2091, 25381, 3255 at 100; 25378 at 70 (did not yield to the ambulance). The other five crashed at
+  CARLA start-up (port reuse) and were rerun with a free-port wait.
+- B5 (planned, not built): add TransFuser's 6-camera rig to the agent behind a flag, a TransFuser
+  perception service in venv_lead, and a `scene` module in driver_lib.
+- Teacher/student: rerun from driver_lib as the seed (agreed 11-26), 3 rounds per arm, offline first;
+  practice-route experiment (same-scenario Bench2Drive route before each test route) proposed.
+  Budget for both to be set after the Thursday-night B3s+L results.
+
 ## Candidate next steps (none agreed yet; ask the user)
 
 1. Suggest the §5.1 camera-mount fix (0bfa4af) and the oracle fix (6ef0435) to whoever owns the shared
