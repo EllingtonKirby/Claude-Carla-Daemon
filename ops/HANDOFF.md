@@ -122,7 +122,7 @@ the background; this file has the current state and the open tasks.
 - The user (11-25): no strict A/B needed. Run only B3s+L (new guide + library), 10 routes, on
   Thursday night 11-26, and compare tokens with the earlier B3s+/B2+ runs. Scheduled:
   `~/workspace/b3sL_thursday.sh` (running, sleeps until 17:55 UTC 11-26; cancel with
-  `pkill -f b3sL_thursday.sh`) sets cap 0.80 until 11-27 12:00 UTC, starts the strong service, runs
+  `pkill -f b3sL_thursday.sh`) sets cap 0.95 (raised from 0.80 by the user on 11-26) until 11-27 12:00 UTC, starts the strong service, runs
   `sessions/ladder_plus/jobs_b3sL.txt`, stops the service and sets the cap back to 0.0. Log:
   `sessions/ladder_plus/lanes_b3sL.log`. `jobs_lib.txt` also holds a no-library control, not scheduled.
 

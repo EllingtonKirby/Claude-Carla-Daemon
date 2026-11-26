@@ -4,8 +4,8 @@
 # stops the service and blocks lanes again. Cancel with: pkill -f b3sL_thursday.sh
 START=$(date -u -d '2026-11-26 17:55' +%s)
 while [ "$(date +%s)" -lt "$START" ]; do sleep 60; done
-echo "0.80 $(date -u -d '2026-11-27 12:00' +%s)" > "$HOME/workspace/quota_cap"
-echo "$(date -Is) cap 0.80; starting strong perception service"
+echo "0.95 $(date -u -d '2026-11-27 12:00' +%s)" > "$HOME/workspace/quota_cap"
+echo "$(date -Is) cap 0.95; starting strong perception service"
 cd "$HOME/workspace/ccd_priv2" || exit 1
 uv python install 3.11 3.12 > /dev/null 2>&1
 BACKEND=strong PERCEPTION_PY="$HOME/workspace/venv_perception2/bin/python" \
