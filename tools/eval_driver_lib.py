@@ -12,6 +12,8 @@ lanes     lanes.markings() on CAM_FRONT against the same line fit run on the gro
           (scenes are 40 ticks apart): error against the ground-truth centre on the frames where the
           raw scan found a lane, the tracker's error on frames where it did not (it coasts), and
           jitter (median change between consecutive estimates) for both.
+scene     (--scene; needs the TransFuser service at CARLA_PROBE_PERCEPTION_ADDR and frames with
+          TFV6_rgb.jpg) scene.read() objects and lanes, scored the same way.
 objects   (--objects; needs CARLA_PROBE_PERCEPTION_ADDR) objects.scan() footprints against
           actors_truth boxes: recall within 30 m and the error of the nearest point, for the
           footprint and for the mask's median-depth point.
@@ -63,7 +65,10 @@ def truth_nearest(t: dict):
 
 def score_objects(fd: str, sc: dict, obj: dict) -> None:
     from carla_probe.driver_lib import objects
-    dets = objects.scan(fd)
+    score_dets(objects.scan(fd), sc, obj)
+
+
+def score_dets(dets: list, sc: dict, obj: dict) -> None:
     for t in sc["actors_truth"]:
         tn = truth_nearest(t)
         if math.hypot(*tn) > 30:
@@ -83,6 +88,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("scenes_root", type=Path)
     ap.add_argument("--objects", action="store_true")
+    ap.add_argument("--scene", action="store_true", help="also score scene.read() (TransFuser v6): objects and lanes")
     ap.add_argument("--out", type=Path)
     a = ap.parse_args()
     routes = sorted(glob.glob(str(a.scenes_root / "*/route_scenes")))
@@ -90,6 +96,8 @@ def main() -> None:
     errs = {"centre": [], "width": [], "heading": []}; found = n = 0
     tr_raw, tr_trk, tr_fill, jit_raw, jit_trk = [], [], [], [], []
     obj = {"truth": 0, "found": 0, "near_err": [], "depth_err": [], "left_err": []}
+    sobj = {"truth": 0, "found": 0, "near_err": [], "depth_err": [], "left_err": []}
+    serr = {"centre": [], "width": [], "heading": []}; sfound = sn = 0
     for rd in routes:
         scenes = [json.load(open(p)) for p in sorted(glob.glob(rd + "/scene_*.json"))]
         trk_path = "/tmp/_eval_lane_tracker.json"
@@ -106,6 +114,19 @@ def main() -> None:
             est = trk.update(m, int(sc["step"]), float(sc["speed_mps"]))
             if a.objects and sc.get("actors_truth") is not None:
                 score_objects(fd, sc, obj)
+            if a.scene and os.path.exists(os.path.join(fd, "TFV6_rgb.jpg")):
+                from carla_probe.driver_lib import scene
+                sres = scene.read(fd)
+                if sc.get("actors_truth") is not None:
+                    score_dets(sres["objects"], sc, sobj)
+                if g is not None and g.get("centre_left") is not None:
+                    sn += 1
+                    sl = sres["lanes"]
+                    if sl.get("centre_left") is not None:
+                        sfound += 1
+                        serr["centre"].append(sl["centre_left"] - g["centre_left"])
+                        serr["width"].append(sl["width"] - g["width"])
+                        serr["heading"].append(sl["heading_deg"] - g["heading_deg"])
             if g is None or g.get("centre_left") is None:
                 prev_raw = prev_trk = None
                 continue
@@ -133,6 +154,12 @@ def main() -> None:
                       "raw_jitter_m": med(jit_raw), "tracked_jitter_m": med(jit_trk),
                       "raw_err_p90_m": round(float(np.percentile(tr_raw, 90)), 3) if tr_raw else None,
                       "tracked_err_p90_m": round(float(np.percentile(tr_trk, 90)), 3) if tr_trk else None}
+    if a.scene:
+        res["scene_objects"] = {"truth_within_30m": sobj["truth"], "recall": round(sobj["found"] / max(1, sobj["truth"]), 3),
+                                "nearest_point_err_m": med(sobj["near_err"]), "nearest_left_err_m": med(sobj["left_err"])}
+        res["scene_lanes"] = {"frames_with_gt_lane": sn, "found": round(sfound / max(1, sn), 3),
+                              "centre_err_m": med(serr["centre"]), "width_err_m": med(serr["width"]),
+                              "heading_err_deg": med(serr["heading"])}
     if a.objects:
         res["objects"] = {"truth_within_30m": obj["truth"], "recall": round(obj["found"] / max(1, obj["truth"]), 3),
                           "nearest_point_err_m": med(obj["near_err"]), "nearest_left_err_m": med(obj["left_err"]),

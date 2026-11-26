@@ -98,3 +98,28 @@ p = zoom.around(frame_dir, "CAM_FRONT", fwd=25, left=-3.5, size_m=6)            
 ```
 
 Returns a PNG path in your code dir; read it. Upscaling adds no detail; `brighten` helps in fog.
+
+## scene: TransFuser v6 perception (only in sessions that run it)
+
+```python
+s = scene.read(frame_dir)                      # ~1.5 s, all six TFV6 cameras at once
+print(scene.describe(s))
+s["objects"]      # nearest first: class, fwd/left (centre), near_fwd/near_left (nearest point),
+                  # yaw_rel_deg (+ = turned left, ~180 = oncoming), length_m, width_m,
+                  # speed_mps (rough), braking, score
+s["lanes"]        # same format as lanes.markings(): lines, centre_left, width, heading_deg
+s["lights"]       # traffic-light cells ahead: [{"state": "red"|"green", "fwd", "left"}]
+scene.is_road(s, fwd, left)                   # True where the map says road or lane marking
+png = scene.render(s)                         # bird's-eye picture: forward up, you at the bottom
+```
+
+TransFuser v6 is a driving network trained on CARLA; here only its perception is used: boxes for
+vehicles, walkers, bikers, parked vehicles (`parking`), emergency vehicles (`special`), obstacles
+(cones, barriers), traffic lights and stop signs, and a bird's-eye map 32 m behind to 64 m ahead,
+40 m each side, at 0.25 m. It looks through its own six cameras (TFV6_1 ... TFV6_6), which are also
+yours to view; the `lanes.LaneTracker` works on `s["lanes"]` as it does on `lanes.markings()`.
+
+Measured offline against CARLA ground truth (30 scenes on two routes, road users within 30 m): 89%
+found, nearest-point error 0.29 m (median), sideways 0.15 m. Lanes: found in every frame that had a
+clear ground-truth lane (7), centre within 0.31 m. Speeds are rough (one car doing 3.3 m/s read as
+7.3), and small or distant pedestrians can be missed.

@@ -22,6 +22,7 @@ and the vla venv is Python 3.8. HTTP + JSON, bodies carry base64 .npy, so the cl
 
 POST /depth    {"image_b64"}                -> {"ok", "depth_npy_b64", "shape", "ms"}
 POST /segment  {"image_b64", "prompts": []} -> {"ok", "labels_npy_b64", "segments": [...], "ms"}
+POST /scene    forwarded to the TransFuser v6 perception service when --tfv6-addr is set
 GET  /health                                -> {"ok", "depth_model", "segment_model", "open_vocabulary"}
 """
 from __future__ import annotations
@@ -225,6 +226,10 @@ def make_handler(models):
 
         def do_POST(self):
             t0 = time.time()
+            if self.path == "/scene":
+                # TransFuser v6 perception (carla_probe/tfv6_server.py), forwarded so the driver's
+                # code tool still talks to exactly one address.
+                return self._forward_scene(t0)
             try:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 rgb = _decode_image(body["image_b64"])
@@ -240,7 +245,23 @@ def make_handler(models):
                     self._send(404, {"ok": False, "error": "unknown path"})
             except Exception as e:
                 self._send(500, {"ok": False, "error": f"{type(e).__name__}: {e}", "trace": traceback.format_exc(limit=3)})
+        def _forward_scene(self, t0: float) -> None:
+            import urllib.request
+            raw = self.rfile.read(int(self.headers["Content-Length"]))
+            if not TFV6_ADDR:
+                return self._send(404, {"ok": False, "error": "no TransFuser scene service in this session"})
+            try:
+                req = urllib.request.Request(f"http://{TFV6_ADDR}/scene", data=raw, headers={"Content-Type": "application/json"})
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(req, timeout=120) as r:
+                    out = json.loads(r.read())
+                self._send(200 if out.get("ok") else 500, out)
+            except Exception as e:
+                self._send(500, {"ok": False, "error": f"{type(e).__name__}: {e}"})
     return Handler
+
+
+TFV6_ADDR = ""
 
 
 def main() -> None:
@@ -252,7 +273,10 @@ def main() -> None:
                     help="legacy = Depth Anything V2 + Mask2Former/SAM 3 (transformers); strong = Depth Pro 2 + SAM 3")
     ap.add_argument("--segmenter", default="auto", choices=["auto", "sam3", "panoptic"], help="legacy backend only")
     ap.add_argument("--depth-preset", default="depthpro2-h", help="strong backend only: depthpro2-{s,b,l,h}")
+    ap.add_argument("--tfv6-addr", default="", help="host:port of carla_probe/tfv6_server.py; enables POST /scene")
     a = ap.parse_args()
+    global TFV6_ADDR
+    TFV6_ADDR = a.tfv6_addr
     models = StrongModels(a.device, a.depth_preset) if a.backend == "strong" else Models(a.device, a.segmenter)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(models))
     print(f"[perception] serving on {a.host}:{a.port} depth={models.depth_model_name} segment={models.segment_model_name}", flush=True)

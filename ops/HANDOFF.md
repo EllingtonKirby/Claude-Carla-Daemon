@@ -137,8 +137,20 @@ the background; this file has the current state and the open tasks.
   `~/workspace/lead_runs/visiononly_resnet34/<route>/checkpoint_endpoint.json`. First pass: 17569,
   2091, 25381, 3255 at 100; 25378 at 70 (did not yield to the ambulance). The other five crashed at
   CARLA start-up (port reuse) and were rerun with a free-port wait.
-- B5 (planned, not built): add TransFuser's 6-camera rig to the agent behind a flag, a TransFuser
-  perception service in venv_lead, and a `scene` module in driver_lib.
+- Reference result (11-26, complete): TransFuser v6 vision-only alone, 97.0 mean on dev10 (100 on nine,
+  70 on 25378: did not yield to the ambulance). A reference, not an arm.
+- B5 (built 11-26, branch `b5-scene`, PR #5, worktree `~/workspace/ccd_b5`; not yet driven): cameras +
+  code + strong perception + driver library + TransFuser perception. `run_eval.sh TFV6=1`.
+  - The leaderboard allows at most 8 RGB cameras, so with TFV6 the agent keeps CAM_FRONT and CAM_BACK
+    and replaces CAM_FRONT_LEFT/RIGHT with TransFuser's 6-camera ring (the user chose this, 11-26);
+    percept defaults to CAM_FRONT, TFV6_1, TFV6_3, CAM_BACK.
+  - `carla_probe/tfv6_server.py` (venv_lead, port 8785): boxes + bird's-eye map only, never the plan.
+    The perception service forwards POST /scene to it (`--tfv6-addr`); `lib/scene.py` reads it.
+  - Offline (`tools/eval_driver_lib.py --scene` on `ccd_b5/sessions/scenes_tfv6`, 30 scenes, 2
+    routes): objects 89% recall, 0.29 m nearest-point error, 0.15 m sideways; lanes found in 7/7
+    frames with a clean ground-truth lane, centre within 0.31 m.
+  - Launch: `~/workspace/b5_launch.sh [START_UTC] [CAP]` with ccd_priv2 checked out on b5-scene
+    (do that only after the Thursday B3s+L run is done); job list `sessions/ladder_plus/jobs_b5.txt`.
 - Teacher/student: rerun from driver_lib as the seed (agreed 11-26), 3 rounds per arm, offline first;
   practice-route experiment (same-scenario Bench2Drive route before each test route) proposed.
   Budget for both to be set after the Thursday-night B3s+L results.

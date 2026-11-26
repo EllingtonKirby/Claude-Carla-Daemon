@@ -133,6 +133,12 @@ def lines_from_paint(paint: np.ndarray, yellow: np.ndarray, cam: str = "CAM_FRON
                       "coverage": round(cover, 2), "left_at_10": round(float(a + 10 * b + 100 * c2), 2),
                       "curvature": round(2 * c2, 4)})
     lines = [d for d in lines if d["coverage"] >= 0.15]
+    # a thick marking can yield two fits half a metre apart: keep the better-covered one
+    kept = []
+    for d in sorted(lines, key=lambda d: -d["coverage"]):
+        if all(abs(d["left_at_10"] - k["left_at_10"]) > 0.5 for k in kept):
+            kept.append(d)
+    lines = kept
     lines.sort(key=lambda d: d["left_at_10"])
     if cam == "CAM_BACK":                                   # fitted with fwd negated: report in ego terms
         for d in lines:
