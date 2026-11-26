@@ -804,3 +804,173 @@ def test_drive_learned_policy(make_session, fake_vla, access):
     rows = [json.loads(l) for l in (s.out / "vla.jsonl").read_text().splitlines()]
     assert len(rows) == 7 and rows[0]["language"].startswith("echo:") and len(rows[0]["route"]) == 20
     _finish(s)
+
+
+# ----------------------------------------------------------------------------- dense
+def test_dense_session(make_session, monkeypatch):
+    """dense = the sensors view, exactly, plus GT depth + instance arrays written into the frame dir.
+    Everything sensors refuses, dense refuses; nothing privileged reaches a reply."""
+    import carla_probe.gt_dense as gd
+    started = []
+
+    class FakeRig:
+        def __init__(self, world, hero, cameras, scale):
+            started.append((len(cameras), scale))
+
+        def write(self, out_dir, cams, frame):
+            for cam in cams:
+                np.save(out_dir / f"{cam}_depth.npy", np.zeros((2, 2), np.float16))
+            return [f"{cam}_depth.npy" for cam in cams]
+
+        def destroy(self):
+            pass
+
+    monkeypatch.setattr(gd, "DenseRig", FakeRig)
+    s = make_session("dense")
+    c = s.c
+    st = c.call("status")["status"]
+    assert st["access"] == "dense"
+    assert not {"speed_limit_mps", "collision_contacts", "score"} & set(st)
+
+    first = c.call("percept")
+    assert started == [(4, 0.5)]
+    assert not any(f.endswith("_depth.npy") for f in first["files"]), "the rig spawned this tick has no images yet"
+    for payload in (first["observe"], c.call("get_state")["state"]):
+        leaked = [k for k in _keys(payload) if any(k.startswith(w) for w in _PRIVILEGED_WORDS)]
+        assert not leaked, leaked
+    for bad in ({"cmd": "get_score"}, {"cmd": "run_until_event", "event": "collision"},
+                {"cmd": "tick", "n": 5, "stop_on_collision": True}):
+        name = bad.pop("cmd")
+        resp = c.call(name, **bad)
+        assert resp["ok"] is False and "access=dense" in resp["error"], (name, resp)
+
+    c.call("hold", ticks=1)
+    later = c.call("percept")
+    assert "CAM_FRONT_depth.npy" in later["files"]
+    frames = Path(later["frames_dir"])
+    assert (frames / "CAM_FRONT_depth.npy").is_file()
+    model = json.loads((frames.parent / "cameras.json").read_text())
+    assert set(model["cameras"]["CAM_FRONT"]["intrinsics"]) == {"jpg", "depth_npy", "inst_png"}
+    _finish(s)
+
+
+def test_sensors_session_writes_a_camera_model_but_no_dense_files(make_session):
+    s = make_session("sensors", code={"full_res_frames": True})
+    r = s.c.call("percept")
+    assert "CAM_FRONT_full.jpg" in r["files"] and not any("depth" in f for f in r["files"])
+    model = json.loads((Path(r["frames_dir"]).parent / "cameras.json").read_text())
+    assert set(model["cameras"]["CAM_BACK"]["intrinsics"]) == {"jpg", "full_jpg"}
+    _finish(s)
+
+
+# ----------------------------------------------------------------------------- privileged extras
+def _extras_cfg(tmp_path):
+    import json as _json
+    t = np.arange(120) * 0.05
+    table = {"configs": {"pid075": {"launch": {str(v): list(np.minimum(v, 2.0 * t)) for v in (3.0, 6.0, 9.0)},
+                                    "brake": {str(v): list(np.maximum(0.0, v - 8.0 * t)) for v in (5.0, 9.0)},
+                                    "offset": [], "arc": [{"speed": 3.0, "curvature": 0.0, "p95": 0.2},
+                                                          {"speed": 9.0, "curvature": 0.03, "p95": 0.8}]}}}
+    p = tmp_path / "controller_model.json"
+    p.write_text(_json.dumps(table))
+    return {"enabled": True, "scenario_lookahead_m": 150.0, "controller_model": str(p)}
+
+
+def test_privileged_extras(make_session, tmp_path):
+    s = make_session("privileged", privileged_extras=_extras_cfg(tmp_path))
+    c = s.c
+    obs = c.call("percept")["observe"]
+    a = obs["actors_nearest"][0]
+    assert {"type", "role", "emergency"} <= set(a), a
+    assert {"stop_sign", "traffic_light", "emergency_vehicle", "collisions"} <= set(obs["rules"])
+    assert "4 m" in obs["rules"]["stop_sign"]["rule"]
+    assert isinstance(obs["scenarios"], list)
+
+    pred = c.call("predict", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=40)
+    assert pred["ok"], pred
+    p = pred["predict"]
+    assert p["poses"] and p["poses"][-1]["fwd"] > 0 and "band_m" in p["poses"][-1] and "clearances" not in p
+
+    chk = c.call("plan_check", waypoints=[[5, 0], [10, 0], [20, 0], [30, 0]], target_speed=6, ticks=60)
+    assert chk["ok"], chk
+    cl = chk["plan_check"]["clearances"]
+    lead = next(r for r in cl if r["id"] == 2)          # the fake lead car: 20 m ahead, 5 m to the right
+    assert lead["min_clearance_m"] > 0 and lead["worst_case_m"] <= lead["min_clearance_m"]
+
+    c.call("apply_plan", waypoints=[[5, 0], [10, 0], [20, 0]], ticks=5, target_speed=4)
+    rows = [json.loads(l) for l in (s.out / "predictions.jsonl").read_text().splitlines()]
+    assert len(rows) == 1 and len(rows[0]["poses"]) == 5
+    _finish(s)
+
+
+def test_extras_are_off_by_default_and_never_reach_sensors(make_session, tmp_path):
+    s = make_session("privileged")
+    obs = s.c.call("percept")["observe"]
+    assert "rules" not in obs and "type" not in obs["actors_nearest"][0]
+    assert s.c.call("predict", waypoints=[[5, 0], [10, 0]])["ok"] is False
+    _finish(s)
+    s = make_session("sensors", privileged_extras=_extras_cfg(tmp_path))
+    obs = s.c.call("percept")["observe"]
+    assert "rules" not in obs and "scenarios" not in obs
+    r = s.c.call("plan_check", waypoints=[[5, 0], [10, 0]])
+    assert r["ok"] is False and "access=sensors" in r["error"]
+    assert s.c.call("predict", waypoints=[[5, 0], [10, 0]])["ok"] is False
+    _finish(s)
+
+
+def test_info_extras_on_camera_tracks(make_session, tmp_path):
+    ex = _extras_cfg(tmp_path)
+    s = make_session("sensors", privileged_extras={**ex, "enabled": False}, info_extras={"enabled": True})
+    c = s.c
+    obs = c.call("percept")["observe"]
+    assert {"stop_sign", "traffic_light", "min_speed"} <= set(obs["rules"]) and isinstance(obs["scenarios"], list)
+    assert isinstance(obs["rules"]["stop_sign"], str)            # text only: no live scorer state
+    assert c.call("predict", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=40)["ok"]
+    r = c.call("plan_check", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=40)
+    assert r["ok"] is False and "obstacles" in r["error"]       # nothing from ground truth
+    # an obstacle 2 m to the left of the path binds; the advice is to move right
+    chk = c.call("plan_check", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=120,
+                 obstacles=[[12, 2.0, 4.0, 1.8]])
+    assert chk["ok"], chk
+    pc = chk["plan_check"]
+    row = pc["clearances"][0]
+    assert row["side"] == "left" and row["trend"] == "closing"
+    assert pc["binding"] and "RIGHT" in pc["binding"], pc["clearances"]
+    pinch = c.call("plan_check", waypoints=[[5, 0], [10, 0], [20, 0]], target_speed=6, ticks=120,
+                   obstacles=[[12, 2.0, 4.0, 1.8], [12, -2.0, 4.0, 1.8]])["plan_check"]
+    assert pinch["binding"].startswith("pinched")
+    _finish(s)
+
+
+def test_notices_for_speed_band_and_negative_throttle(make_session, tmp_path):
+    s = make_session("privileged", pid={**yaml.safe_load((REPO / "carla_probe" / "config.yaml").read_text())["pid"], "avoid_speed_band": [5.0, 6.7]})
+    c = s.c
+    r = c.call("apply_plan", waypoints=[[5, 0], [10, 0], [20, 0]], ticks=2, target_speed=6.0, why="t")
+    assert any("gearbox" in n for n in r["result"].get("notices", [])), r["result"]
+    r = c.call("set_control", steer=0.0, throttle=-0.5, brake=0.0, ticks=1, why="t")
+    assert any("no reverse" in n for n in r["result"].get("notices", [])), r["result"]
+    r = c.call("set_control", steer=0.0, throttle=0.2, brake=0.0, ticks=1, why="t")
+    assert "notices" not in r["result"]
+    _finish(s)
+
+
+def test_behaviour_reader_survives_nested_actor_lists():
+    import types as _t
+    from carla_probe import privileged_extras as px
+    a1 = _t.SimpleNamespace(id=11, type_id="vehicle.audi.tt")
+    a2 = _t.SimpleNamespace(id=12, type_id="static.prop.constructioncone")
+
+    class ActorFlow:                         # name matters: the reader keys on the node class
+        def __init__(self):
+            self._actor_list = [[a1], [a2, None]]
+            self._is_constant_velocity_active = True
+
+    class Tree:
+        def iterate(self):
+            yield ActorFlow()
+
+    sc = _t.SimpleNamespace(config=_t.SimpleNamespace(type="ConstructionObstacleTwoWays"), behavior_tree=Tree(),
+                            other_actors=[[a2]])
+    beh = px.actor_behaviours(_t.SimpleNamespace(list_scenarios=[sc]))
+    assert beh[11]["reacts_to_you"].startswith("no") and 12 in beh
+    assert px.actor_behaviours(_t.SimpleNamespace(list_scenarios=[_t.SimpleNamespace(behavior_tree=1 / 1)])) == {}

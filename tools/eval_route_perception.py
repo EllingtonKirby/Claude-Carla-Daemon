@@ -17,9 +17,9 @@ Runs the model through `claude -p`, so it bills the same subscription a benchmar
 no API key here. One call per scene, each short. Scenes are scored independently, so this is
 resumable and parallel-safe: re-running skips scenes whose answer file already exists.
 
-Reports mean |error| per distance -- the error-versus-distance curve is the whole point, since a
-model can be perfect at 5 m and useless at 30 m -- plus the share of scenes where the answer lands
-within half a lane (0.875 m) at each distance.
+Reports the mean error per arclength -- the error-versus-distance curve is the whole point, since a
+model can be perfect at 7 m and useless at 30 m -- plus the share of scenes where the answer lands
+within half a lane (0.875 m) at each arclength.
 """
 
 from __future__ import annotations
@@ -33,9 +33,12 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-# Distances scored. Kept inside the captured truth's reach; each is a separate question, because a
-# single aggregate hides exactly the near-good/far-bad shape we are looking for.
-DISTANCES = [5.0, 10.0, 15.0, 20.0, 30.0, 40.0]
+# Arclengths scored, along the path. Deliberately NOT the arclengths the nav points are given at
+# (5/10/20/40 m): those the model can copy, and the question is whether it can place the road
+# BETWEEN them from the image. Each is a separate question, because a single aggregate hides
+# exactly the near-good/far-bad shape we are looking for. Everything here is by arclength, as the
+# truth and the nav points are: a forward distance is ill-defined once the road turns.
+DISTANCES = [7.5, 15.0, 25.0, 30.0, 35.0]
 HALF_LANE = 0.875  # a lane is ~3.5 m: beyond this the car is closer to the line than the centre
 
 PROMPT = """You are looking at the camera views from a car driving in the CARLA simulator, on a \
@@ -46,11 +49,12 @@ approximate: {nav}
 (these are [forward, left] in metres, at {at_m} m ahead respectively)
 
 From the images and those points, estimate where the ROAD YOU SHOULD DRIVE actually goes. Report \
-the lateral offset of the centre of your driving path at each of these distances ahead: {dists} m.
+the point on the centre of your driving path at each of these distances ALONG THE PATH (arclength, \
+as the given points are): {dists} m.
 
 Answer with one line of JSON and nothing else:
-{{"offsets": [<offset at {first} m>, ..., <offset at {last} m>]}}
-Positive means the path lies to your LEFT, negative to your RIGHT. Use metres."""
+{{"points": [[fwd, left] at {first} m along, ..., [fwd, left] at {last} m along]}}
+fwd is metres straight ahead of you, left is metres to your LEFT (negative = right)."""
 
 
 def ask(scene: Dict[str, Any], model: str, cwd: Path) -> Optional[List[float]]:
@@ -66,20 +70,24 @@ def ask(scene: Dict[str, Any], model: str, cwd: Path) -> Optional[List[float]]:
         ["claude", "-p", prompt, "--model", model, "--setting-sources", "", "--tools", "Read",
          "--permission-mode", "dontAsk", "--allowedTools", allow],
         cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=300)
-    m = re.search(r'\{[^{}]*"offsets"\s*:\s*\[[^\]]*\][^{}]*\}', out.stdout)
+    m = re.search(r'\{\s*"points"\s*:\s*\[.*?\]\s*\]\s*\}', out.stdout, re.S)
     if not m:
         return None
     try:
-        vals = json.loads(m.group(0))["offsets"]
-    except (json.JSONDecodeError, KeyError):
+        vals = json.loads(m.group(0))["points"]
+        vals = [[float(v[0]), float(v[1])] for v in vals]
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, IndexError):
         return None
-    return [float(v) for v in vals] if len(vals) == len(DISTANCES) else None
+    return vals if len(vals) == len(DISTANCES) else None
 
 
-def truth_at(scene: Dict[str, Any]) -> List[float]:
-    """The dense route's lateral offset at each scored distance, interpolated along forward."""
+def truth_at(scene: Dict[str, Any]) -> List[List[float]]:
+    """The dense route point at each scored arclength. `truth` is sampled every step_m of
+    arclength from the ego (capture writes it that way), so index i sits at (i+1)*step_m."""
     t = np.asarray(scene["truth"], dtype=float)
-    return [float(np.interp(d, t[:, 0], t[:, 1])) for d in DISTANCES]
+    step = float(scene.get("truth_step_m") or 2.0)
+    s = step * np.arange(1, len(t) + 1)
+    return [[float(np.interp(d, s, t[:, 0])), float(np.interp(d, s, t[:, 1]))] for d in DISTANCES]
 
 
 def main() -> int:
@@ -109,7 +117,8 @@ def main() -> int:
         truth = truth_at(scene)
         ok = answer is not None
         print(f"[{i}/{len(files)}] step {scene['step']:>5} " +
-              ("  ".join(f"{d:g}m {a:+.1f}/{t:+.1f}" for d, a, t in zip(DISTANCES, answer, truth))
+              ("  ".join(f"{d:g}m ({a[0]:.0f},{a[1]:+.1f})/({t[0]:.0f},{t[1]:+.1f})"
+                         for d, a, t in zip(DISTANCES, answer, truth))
                if ok else "  no parsable answer"), flush=True)
         rows.append({"step": scene["step"], "answer": answer, "truth": truth, "ok": ok})
 
@@ -117,7 +126,8 @@ def main() -> int:
     if not scored:
         print("\nno scenes produced a parsable answer")
         return 1
-    err = np.abs(np.array([r["answer"] for r in scored]) - np.array([r["truth"] for r in scored]))
+    # Euclidean distance between the model's point and the truth point at the same arclength.
+    err = np.linalg.norm(np.array([r["answer"] for r in scored]) - np.array([r["truth"] for r in scored]), axis=2)
     if args.json:
         print(json.dumps({"model": args.model, "n": len(scored), "distances": DISTANCES,
                           "mean_abs_error": err.mean(axis=0).tolist(),
@@ -130,8 +140,8 @@ def main() -> int:
     for j, d in enumerate(DISTANCES):
         print(f"| {d:g} m | {err[:, j].mean():.2f} m | {np.percentile(err[:, j], 90):.2f} m | "
               f"{100*(err[:, j] < HALF_LANE).mean():.0f}% |")
-    print(f"\nA lane is ~3.5 m wide, so an error past {HALF_LANE} m puts the planned path nearer the "
-          f"lane line than the centre.")
+    print(f"\nError is the distance between the model's point and the road's centre at the same arclength. "
+          f"A lane is ~3.5 m wide, so past {HALF_LANE} m the planned path is nearer the lane line than the centre.")
     return 0
 
 

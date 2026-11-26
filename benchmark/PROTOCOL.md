@@ -31,6 +31,7 @@ across them.
 |---|---|---|---|
 | **sensors** | `ACCESS=sensors bash scripts/run_session.sh <route>` | cameras, speedometer, IMU, GNSS, and the leaderboard's route plan (sparse GPS waypoints + turn commands) | SENSORS-track agents on the same benchmark |
 | **privileged** | `ACCESS=privileged bash scripts/run_session.sh <route>` | ground truth: actors, lanes, traffic lights, stop signs, speed limit, live score and infractions | privileged / expert agents only |
+| **dense** | `ACCESS=dense bash scripts/run_session.sh <route>` | the sensors view, plus ground-truth depth and instance segmentation per camera | nothing published: an upper bound for pixel-level perception |
 
 Both benchmarks offer both tracks, so a result is a (benchmark, track) pair: four buckets, none of
 which may be averaged with another. The sensors track uses only inputs a SENSORS-track agent
@@ -78,8 +79,11 @@ it adds no information beyond what the sensors show.
    `require_justification: true`). Justifications are part of the result and are reviewed against
    the replayed scene.
 6. **Probe protocol only.** No reading route XMLs, scenario definitions or simulator code -- which
-   includes the vendored benchmark trees under `third_party/` -- no editing code or config during a
-   run, and no human hints.
+   includes the vendored benchmark trees under `third_party/` -- no editing the repo's code or
+   config during a run, and no human hints. With the code tool (`CODE_TOOL=on`, OPERATOR_GUIDE
+   §8b) the driver may write and run its own scripts in its code dir; that is a harness setting,
+   recorded in `driver.json`, and runs with and without it are different measurements. A perception
+   service (`PERCEPTION_ADDR`) sees only the cameras, so it keeps a sensors run eligible.
 7. **Sensors track: no side channels.** The session directory holds privileged data
    (`evaluator.log`, `carla.log`, `result.json`). While driving, open only the files whose paths the
    daemon returns (`percept`, `render_bev`, `dump_frame`). Reading logs is allowed only to

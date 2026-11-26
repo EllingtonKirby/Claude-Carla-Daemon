@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """How well did the ego hold its lane? Distance from the LANE CENTRE, per tick.
 
-    python tools/lane_keeping.py SESSION_DIR... [--every 5] [--port 20200] [--gpu 0] [--json]
+    python tools/lane_keeping.py SESSION_DIR... [--every 5] [--until STEP] [--port 20200] [--gpu 0] [--json]
 
 Needs `recorder_truth.json` (run tools/recorder_truth.py first) and a CARLA server, which it uses
 only to load the town's map and project each true ego position onto its lane.
@@ -71,7 +71,7 @@ def connect(port: int, gpu: int):
     raise RuntimeError(f"no CARLA server on port {port}")
 
 
-def measure(client, session: Path, every: int) -> Optional[Dict[str, Any]]:
+def measure(client, session: Path, every: int, until: Optional[int] = None) -> Optional[Dict[str, Any]]:
     truth_path = session / "recorder_truth.json"
     if not truth_path.is_file():
         print(f"{session.name}: no recorder_truth.json (run tools/recorder_truth.py first)")
@@ -98,6 +98,8 @@ def measure(client, session: Path, every: int) -> Optional[Dict[str, Any]]:
     for row in [json.loads(l) for l in (session / "trajectory.jsonl").read_text().splitlines()][::every]:
         if row["speed"] <= 0.5:      # a parked car holds its lane perfectly; that is not tracking
             continue
+        if until is not None and row["step"] > until:   # e.g. stop before a collision wrecks the pose
+            break
         frame = truth["frames"].get(str(row["frame"] - offset))
         if not frame:
             continue
@@ -129,6 +131,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("sessions", nargs="+", type=Path)
     ap.add_argument("--every", type=int, default=5, help="sample every Nth tick (default %(default)s)")
+    ap.add_argument("--until", type=int, default=None, help="ignore ticks after this step (e.g. a collision)")
     ap.add_argument("--port", type=int, default=20200)
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--json", action="store_true")
@@ -137,7 +140,7 @@ def main() -> int:
     assert carla is not None, "carla is not importable: run inside the venv (source scripts/env.sh)"
     client, proc = connect(args.port, args.gpu)
     try:
-        rows = [r for r in (measure(client, s, args.every) for s in args.sessions) if r]
+        rows = [r for r in (measure(client, s, args.every, args.until) for s in args.sessions) if r]
     finally:
         if proc is not None:
             proc.terminate()

@@ -45,6 +45,9 @@ If an advance outlasts your shell timeout, **the daemon finishes it anyway**. Re
 | `render_bev` | navigation map: route, route points, your plan | full scene |
 | refused | `get_score`, `run_until_event collision/infraction`, `stop_on_collision` | nothing |
 
+A third level, **dense**, is the sensors column exactly, plus ground-truth depth and segmentation
+arrays for every camera in each `percept` (§8d). It refuses what sensors refuses.
+
 ## 4. Commands
 
 Every reply carries `status`. An advancing command replies once, when the sim pauses again, with
@@ -95,8 +98,11 @@ reviewed against the scene after the run. Write the reason you actually acted on
 Every ego-frame distance in a reply — `route_points_ego`, an actor's `fwd`/`left`, a plan waypoint
 — is measured from the ego **origin**. Your bodywork is not there. On the Bench2Drive hero it
 reaches **2.44 m ahead of the origin, 2.45 m behind, and 0.92 m to each side** (`get_state` →
-`ego_body`, from `config.yaml`). The front camera is mounted a further 0.8 m forward still, so a
-car you judge "3 m away" in `CAM_FRONT` is about **1.4 m from your bumper**.
+`ego_body`, from `config.yaml`). `CAM_FRONT` is **not** at the bumper: it is mounted at x = **-1.5 m**
+(1.5 m *behind* the origin, about 3.9 m behind your front bumper) and 2.0 m up (`get_state` ->
+`ego_body.cameras` has every mount). A distance you measure from a `CAM_FRONT` image is from the
+camera: subtract ~3.9 m to get the gap to your front bumper. Anything about 4 m from the camera is
+already touching you.
 
 This matters more than it sounds. Two cars touch when their centres reach the sum of their
 half-extents: roughly **4.8 m nose to nose and 2.0 m flank to flank**. A "3 m gap" ahead is not a
@@ -151,6 +157,38 @@ apply_plan waypoints=[...] target_speed=6 ticks=20 percept=true why="..."
   `route_end` at the finish). `status` carries speed, route progress and `ticks_left`, and
   **`status.plan_done: true` means the plan ran out before the burst did** — the ego spent the rest
   of it braking, so the plan was too short (§7).
+
+## 6a. The five questions: how to choose the speed
+
+Your `target_speed` is not a judgment call; it is the answer to five questions, asked in this
+order on every decision, from the percept you just opened. **Write the answers at the start of
+`why=`** as `Q1:n Q2:y Q3:n Q4:n Q5:n`, then your reasoning. The answers are how your decisions
+are reviewed afterwards, so answer what you actually see.
+
+- **Q1 - Slow zone.** Am I on an urban street and in, or within ~30 m of, an intersection?
+  Yes: cap `target_speed` at **7 m/s**.
+- **Q2 - Follow.** Is there a vehicle or a cyclist *ahead in my lane, going my way*, close enough
+  (< 4 m + 0.25 x my speed, plus your estimation margin) or slow enough that I should ease off to
+  hold the gap? Parked, broken-down or blocking vehicles are not followed; they are Q5.
+  Yes: `target_speed` = its speed, or lower until the gap is safe.
+- **Q3 - Stop line.** Does a red or amber light for *my* lane (§9), or a stop sign I have not yet
+  stopped at, require me to stop at a line ahead? Yes: plan to the line with `target_speed=0`.
+  A stop sign is done only after >= 1.5 s below 0.1 m/s within 3 m of the line; you keep that
+  memory across looks, nothing does it for you.
+- **Q4 - Path conflict.** If I keep driving my route at the intended speed for the next 2 s, will
+  I hit or come close to *anything*: a crossing, merging, oncoming or pulling-out car, an opening
+  door, a pedestrian or a crossing cyclist (including one moving toward my path further ahead), a
+  cone or debris? A car in the lane I am merging into counts. Yes: **stop now** (`target_speed=0`,
+  or `hold`). `clearance` on your plan (§5) turns the distances you estimate into body clearances.
+- **Q5 - Overtake.** Is my lane blocked by a stationary obstacle, and is the oncoming lane clear
+  for ~64 m? Yes: commit -- `target_speed` up to **11 m/s**, Q1-Q3 no longer apply, **Q4 still
+  applies on every decision** until you are back in your lane. Blocked but not clear: wait behind it.
+
+**Combine:** Q5 -> overtake unless Q4 · else Q4 or Q3 -> stop · else Q2 -> follow · else Q1 ->
+<= 7 m/s · else the speed limit (a posted sign; otherwise 10 m/s).
+
+**Then decide how long before you look again.** Any yes to Q2-Q4 means `ticks <= 20`; only an
+all-no answer licenses a long burst.
 
 ## 7. Driving with `apply_plan`
 
@@ -261,6 +299,148 @@ scenario, and a sentence telling it to accelerate overrides its own caution: tol
 drive with the target speed" at a red light, it accelerates. Say what is true. Use `ticks` of
 10–40 and look again; the reply's `result.vla` reports what it said back (`language`), the speed
 it chose (`desired_speed_mps`) and how many times it was queried.
+
+## 8b. The code tool
+
+Some sessions give you a code tool (the prompt says so). You write Python files into your code
+dir with Write / Edit, and run one per Bash call with `python -m carla_probe.code_runner FILE.py
+[args]`. A script sees `numpy` and `cv2`, may read the frames a `percept` returns and
+`<frames_dir>/../cameras.json`, and may write only inside your code dir. Everything else is refused
+with `code tool: denied`. It cannot send probe commands: driving stays a decision you make and
+justify. Output is truncated, so print numbers, not arrays.
+
+**What it is for: measuring instead of eyeballing.** Most collisions on this benchmark are not
+missed objects but misjudged margins (§5.1): the driver sees the car and gets the gap wrong by
+about its own half-length. A script can do the geometry exactly.
+
+- **`cameras.json`** gives, per camera, the mount (CARLA vehicle frame: x forward, y RIGHT, z up,
+  yaw + = right) and the pinhole intrinsics of every file a percept writes, keyed by kind
+  (`jpg`, `full_jpg`, `depth_npy`, `inst_png`). Use the intrinsics of the file you load.
+- With the code tool on, each percept also writes **`<cam>_full.jpg`** at native resolution.
+- **Ground plane.** A pixel on the road at row v below the horizon is at forward distance
+  `z ≈ fy · h_cam / (v − cy)` in the camera frame (camera height `h_cam` = mount z, pitch 0), and
+  lateral offset `x = (u − cx) · z / fx` (right positive). Rotate by the mount yaw and add the mount
+  position to get the vehicle frame, then flip y to get the probe's ego `left`. The contact point
+  of a car with the road is the bottom of its body in the image, which is what this projects.
+- **Your own car is in the frame**: the bottom rows of `CAM_FRONT` and `CAM_BACK` show the ego's
+  bonnet and boot. Anything a script finds there is you.
+- **Measure to bodies.** Ego-frame distances are to your origin; your bumper is `ego_body.front_m`
+  ahead of it (§5.1), and `clearance points=...` does that subtraction for you.
+- Build up a small library across the drive (`lib.py` imported by short scripts) rather than
+  rewriting the same projection each time: a script that worked at step 200 is free at step 900.
+- Pausing is free; script run time is not counted against the route. Keep each script under the
+  tool's timeout (120 s).
+
+## 8c. The perception service
+
+When the prompt names a perception service, your scripts may call it -- and no other network
+address. It runs learned models on a camera image, so its answers are estimates, as good as the
+models (Bench2Drive-eligible: they see only your cameras). From a script:
+
+```python
+from carla_probe.perception_client import PerceptionClient
+pc = PerceptionClient()                               # address from the environment
+depth = pc.depth(path)                                # HxW float32, metres along the optical axis
+labels, segments = pc.segment(path, prompts=["car", "pedestrian", "bicycle", "truck"])
+# labels: HxW int32 segment id (0 = none); segments: [{"id", "label", "score", "area", "bbox": [x0,y0,x1,y1]}]
+```
+
+`path` is a frame file a percept returned; outputs are at that image's resolution, so use the
+matching intrinsics. `pc.info()` says which models are loaded and whether `segment` honours free
+`prompts` (an open-vocabulary model) or returns a fixed label set. Monocular metric depth is
+typically good to ~5-10% at 10-30 m and worse far away or on glass; prefer the median over an
+object's mask to any single pixel.
+
+## 8d. Ground-truth arrays (dense track)
+
+On `access: dense` each percept also writes, per camera:
+
+- `<cam>_depth.npy`: float16 HxW, metres along the optical axis (exact).
+- `<cam>_inst.png`: 3-channel uint8. Read with `cv2.imread(p)[..., ::-1]`: channel 0 is the
+  semantic tag (names in `cameras.json` `semantic_tags`: 14 car, 15 truck, 16 bus, 12 pedestrian,
+  18 motorcycle, 19 bicycle, 1 road, 24 road_line, ...), channels 1·256 + 2 an instance id, the
+  same for every pixel of one object.
+
+These are exact, but they are pixels, not a scene list: finding the nearest car in your path is
+still your script's job. They start from the second tick of the route.
+
+**Your own car is in the pictures.** The ego's bonnet fills the bottom of `CAM_FRONT` and its boot
+the bottom of `CAM_BACK`, segmented as a car (one instance id, the same in every camera, at a
+depth of 1-2 m). Exclude that instance before looking for the nearest vehicle; the same applies to
+a perception model's masks (§8c), which will report it as a car a few metres away.
+
+## 8e. Privileged extras: who everyone is, the rules, and where your car will go
+
+Some privileged sessions add the following (the prompt says so; `predict` answers only in them).
+
+**Every actor says who it is and how it treats you.** `actors_nearest` entries carry `type`
+(e.g. `vehicle.ford.ambulance`), `role` (`scenario` or `background`), `emergency`, the `scenario`
+it belongs to, its `behaviour` and `reacts_to_you`, read from the running scenario's code. Take
+`reacts_to_you` literally: a flow vehicle "at constant speed" will NOT brake for you, whatever the
+gap looks like; background traffic brakes only for a vehicle ahead of it in its own lane.
+
+**`rules`** gives the scorer's rules with the live state it judges you on:
+- `stop_sign.scorer_state`: `engaged` (you are in a stop's zone) and `satisfied` (the scorer has
+  counted your stop). A stop counts only below 0.1 m/s with your origin within 4 m of the trigger
+  centre: `next_on_route.origin_to_trigger_m` and `inside_counting_radius` tell you whether a stop
+  here would count. Stopping short and creeping through does not.
+- `emergency_vehicle.nearby`: emergency vehicles near you and whether they are in your lane.
+  Yielding means leaving their lane, not slowing in it.
+
+**`scenarios`** lists the scenarios on the route within 150 m: `type`, `task` (what you have to
+do), `trigger_ahead_m`, whether it has `started`, and its `parameters` (flow speeds, spacing, ...).
+
+**Your own car's motion.** The plan controller is measured (tools/controller_model.json, row
+"plus"). It launches at full throttle until it is within 1 m/s of your target: from standstill it
+reaches ~3.8 m/s in 1 s and 90% of 9 m/s in ~1.7 s, overshoots by up to ~10%, then holds the target
+to about +-0.15 m/s. One exception: the car's automatic gearbox hunts when cruising between 5.0 and
+6.7 m/s (+-0.5 m/s swings, and the benchmark forbids holding a gear), so a target_speed in that band
+is held at 4.9 or 6.8 m/s, whichever is nearer. `predict` already accounts for this; ask for 4.9 or
+6.8 directly if you care which. Within 25% over
+the target it coasts; beyond that it brakes gently; asked to stop it brakes fully, from 12 m/s in
+~1.2 s and from 5 m/s in ~0.7 s. The first ~0.5 s of a route the car does not move.
+It follows your path closely but not exactly: the 95th-percentile sideways error is ~0.05-0.15 m
+on gentle paths, ~0.2-0.3 m on a 3.5 m lane change over 15 m at 6-9 m/s or a 20-35 m radius curve,
+and up to ~0.4 m on a 12 m radius curve at 6 m/s. Plan your margins on top of that, not inside it.
+- `predict waypoints=... [target_speed] [ticks]` returns where the ego will be at each tick of
+  that plan -- speed, pose in today's ego frame, and `band_m`, the measured sideways error there.
+  Nothing moves.
+- `plan_check` (same arguments) adds every nearby actor and parked car: the closest body-to-body
+  clearance over the burst with others extrapolated at their current velocity, and `worst_case_m`
+  with your band subtracted. Below 0 means your own tracking error alone could make contact.
+  Others are extrapolated straight: a vehicle that reacts to you will not keep its velocity, one
+  that does not react will.
+
+Use `plan_check` before any plan near another road user, and treat `worst_case_m` as the margin
+you actually have.
+
+## 8f. Info extras (camera tracks): the rules, the scenarios, and where your car will go
+
+With info extras on a sensors or dense session, every observe reply also carries:
+
+- `rules`: the scorer's rules as text (where a stop counts, which light is yours, yielding to an
+  emergency vehicle, collisions, and `min_speed` events, which are logged but never penalised).
+  There is no live scorer state here: on these tracks you judge it yourself.
+- `scenarios`: each scenario on the route, what it is and what to do, and roughly how far ahead it
+  starts (straight-line forward distance from your GNSS pose estimate).
+
+`predict` works as in §8e. `plan_check` needs the obstacles from you, from your own perception, as
+`obstacles=[[fwd,left,length,width],...]`, optionally with `v_fwd,v_left` and then `yaw_rel_deg`. It
+checks the plan against them body to body, the same way it does on the privileged track. It is only
+as good as your estimates: a car you have not seen, or put in the wrong place, is not checked.
+
+## Replies that tell you something changed (all tracks)
+
+- `notices` in a driving reply: a `target_speed` inside the band where the gearbox hunts is run at a
+  nearby speed instead (the notice says which). A negative throttle is applied as 0.
+- **There is no reverse.** If you are stopped against something, steer away with positive throttle.
+  Do not steer hard while stopped against it, and do not wait for the car to roll back.
+- `plan_check` returns `binding`: which obstacle limits the plan and which way to move. If both sides
+  bind, it says "pinched": then no sideways shift helps, so change the timing or the speed.
+  `warnings` flags a burst that ends mid-turn, arcs tighter than about 8 m radius (the real heading
+  overshoots the plan there), and plans beyond what the controller was measured on.
+- Privileged observe: `left_the_list` names actors that dropped out of `actors_nearest`, and says
+  whether each is still there but beyond `k`, or gone.
 
 ## 9. Hard-won lessons (both tracks)
 

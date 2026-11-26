@@ -8,7 +8,9 @@
 #   privileged  ground-truth scene: actors, lanes, traffic lights, stop signs, speed limit, live score
 #   sensors     Bench2Drive SENSORS-track inputs only: cameras, speedometer, IMU, GNSS and the
 #               leaderboard's route plan; ego pose is estimated from GNSS + compass
-# run_session.sh ACCESS=sensors|privileged rewrites this key in the session's config snapshot.
+#   dense       the sensors view, plus ground-truth depth + instance segmentation arrays per camera
+#               (gt_dense below). Not Bench2Drive-eligible: the perfect-pixels upper bound
+# run_session.sh ACCESS=sensors|privileged|dense rewrites this key in the session's config snapshot.
 access: privileged
 
 # Command socket. PROBE_HOST / PROBE_PORT env vars override (run_session.sh forwards them).
@@ -95,6 +97,19 @@ pid:
   speed_kd: 1.0
   speed_n: 40
   max_throttle: 0.75
+  # Launch boost (pid.py): launch_throttle while more than launch_margin m/s below the target.
+  # 0.75 = off (the stock controller). 1.0 roughly doubles the 1 s launch speed without changing cruise.
+  launch_throttle: 0.75
+  launch_margin: 1.0
+  # Over-speed at cruise (pid.py): coast between brake_ratio and cruise_brake_ratio x target, then
+  # brake at cruise_brake. 1.1 / 1.0 = stock (full brake at 10% over).
+  cruise_brake_ratio: 1.1
+  cruise_brake: 1.0
+  # Hold a gear at cruise instead of letting the automatic gearbox hunt (pid.py gear()). false = stock.
+  cruise_gear_hold: false    # has no effect in a leaderboard run: it forces manual_gear_shift = False
+  # Cruise targets inside this band (m/s) are held at its nearer edge: the automatic gearbox hunts
+  # there (pid.py cruise_target). [] = off (stock).
+  avoid_speed_band: []
   clip_delta: 0.25
   brake_speed: 0.4
   brake_ratio: 1.1
@@ -109,7 +124,16 @@ pid:
   # ego reaches a waypoint. `adaptive` and `lead` interpolate along the plan instead, so the
   # lookahead means what it says and scales with speed: close when slow, far when fast.
   # Switching away from `fixed` changes the plant the gains above were fitted to -- re-validate.
-  steer_mode: adaptive       # fixed | adaptive | lead
+  steer_mode: adaptive       # fixed | adaptive | lead | pursuit
+  # pursuit only (pid.py _pursuit): lookahead from the rear axle = gain * speed + offset, clipped
+  pursuit_gain: 0.5
+  pursuit_offset: 3.0
+  pursuit_min: 3.0
+  pursuit_max: 15.0
+  wheelbase_m: 2.86          # vehicle.lincoln.mkz_2020, measured from its physics control
+  rear_axle_m: 1.389         # rear axle behind the vehicle origin
+  max_steer_deg: 70.0
+  steering_curve: [[0.0, 1.0], [20.0, 0.9], [60.0, 0.8], [120.0, 0.7]]   # km/h -> steer scale, from its physics control
   lookahead_min: 2.5         # adaptive only: arc-length clip (m)
   lookahead_max: 10.5
   speed_scale: 0.9755321901954155    # adaptive + lead: lookahead = speed_scale*v + speed_offset
@@ -164,6 +188,38 @@ percept:
   # when to look is part of what the sensors track measures. Turn it on only to take that decision
   # away deliberately.
   on_advance: false
+
+# code: what a percept writes for the driver's code tool (run_eval.sh CODE_TOOL=on,
+# carla_probe/code_runner.py). The JPGs above are scaled for the driver's EYES; a script measuring
+# pixels wants every pixel there is. Native-resolution <cam>_full.jpg (quality 95) alongside them.
+# frames/cameras.json (always written) gives the mounts and pinhole intrinsics of every image size.
+code:
+  full_res_frames: false
+
+# gt_dense: ground-truth depth + instance segmentation, cloned from every RGB mount
+# (carla_probe/gt_dense.py). Always on for access: dense (that is what the track IS); opt-in for
+# privileged; never on sensors. NOT Bench2Drive-eligible. Every clone renders every tick, so this
+# doubles the camera load -- `scale` (of the RGB size) keeps it affordable; intrinsics scale with it.
+gt_dense:
+  enabled: false
+  scale: 0.5
+
+# privileged_extras: what the privileged driver is told beyond positions (carla_probe/privileged_extras.py):
+# every actor's type, role, emergency flag, scenario and how it treats you; the scorer's rules with the
+# live stop-sign state; the scenarios ahead on the route; and the predict / plan_check commands built on
+# the measured controller model. Privileged access only. Off by default so a stock privileged run is
+# the run the 2026-11-18 corpus was scored with; run_session.sh PRIV_EXTRAS=1 turns it on.
+privileged_extras:
+  enabled: false
+  scenario_lookahead_m: 150.0
+  # tools/characterize_controller.py output; the row used is chosen from pid.long_mode / max_throttle
+  controller_model: tools/controller_model.json
+
+# info_extras: the Privileged+ information that needs no ground-truth perception, for the camera tracks
+# (sensors, dense): the scorer's rules as text, the route's scenarios, and predict / plan_check against
+# obstacles the driver supplies. Uses privileged_extras' scenario_lookahead_m and controller_model.
+info_extras:
+  enabled: false
 
 # vla: a learned driving policy (SimLingo, served by carla_probe/vla_server.py; scripts/setup_vla.sh)
 # that turns the driver's SENTENCE into motion at every tick -- the `drive` command. The driver

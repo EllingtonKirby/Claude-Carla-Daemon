@@ -19,7 +19,7 @@
 # Env: BENCHMARK (bench2drive | fail2drive) selects the leaderboard, the CARLA build and where
 #        routes are resolved from. The two are different benchmarks with different route budgets
 #        and different success rules: never pool their scores (benchmark/PROTOCOL.md).
-#      ACCESS (privileged | sensors; default = the config's `access`)
+#      ACCESS (privileged | sensors | dense; default = the config's `access`)
 #      CARLA_ROOT ($HOME/carla)  F2D_CARLA_ROOT ($HOME/f2d_carla)
 #      GPU_RANK (0)  CARLA_PORT (20000)  TM_PORT (CARLA_PORT+20000)
 #      TM_SEED (0)  PROBE_CONFIG (carla_probe/config.yaml)  PROBE_PORT / PROBE_HOST (from config)
@@ -92,8 +92,8 @@ mkdir -p "$SESSION_DIR"
 cp "$PROBE_CONFIG" "$SESSION_DIR/config.yaml"
 if [ -n "${ACCESS:-}" ]; then
     case "$ACCESS" in
-        privileged | sensors) sed -i -E "s/^access:.*/access: $ACCESS/" "$SESSION_DIR/config.yaml" ;;
-        *) echo "ERROR: ACCESS must be privileged or sensors, got '$ACCESS'" >&2; exit 1 ;;
+        privileged | sensors | dense) sed -i -E "s/^access:.*/access: $ACCESS/" "$SESSION_DIR/config.yaml" ;;
+        *) echo "ERROR: ACCESS must be privileged, sensors or dense, got '$ACCESS'" >&2; exit 1 ;;
     esac
 fi
 if [ -n "${VLA:-}" ]; then
@@ -110,6 +110,42 @@ fi
 : "${SIM_RECORD:=1}"
 RECORD_ARGS=()
 [ "$SIM_RECORD" = "1" ] && RECORD_ARGS=(--record="$SESSION_DIR")
+# CODE_FULL_RES=1 (run_eval.sh CODE_TOOL=on): also write native-resolution frames for the driver's scripts
+# GT_DENSE=1: on a privileged session, also write GT depth + instance arrays (scene capture for
+# tools/teach_perception.py). The dense track turns them on by itself.
+if [ "${GT_DENSE:-0}" = 1 ]; then
+    sed -i -E "/^gt_dense:/,/^[a-z]/ s/^  enabled:.*/  enabled: true/" "$SESSION_DIR/config.yaml"
+fi
+# PRIV_EXTRAS=1: privileged extras (actor behaviours, rules, scenarios, predict / plan_check)
+if [ "${PRIV_EXTRAS:-0}" = 1 ]; then
+    sed -i -E "/^privileged_extras:/,/^[a-z]/ s/^  enabled:.*/  enabled: true/" "$SESSION_DIR/config.yaml"
+fi
+# INFO_EXTRAS=1: camera tracks get rules text, scenarios, predict / plan_check on their own obstacles
+if [ "${INFO_EXTRAS:-0}" = 1 ]; then
+    sed -i -E "/^info_extras:/,/^[a-z]/ s/^  enabled:.*/  enabled: true/" "$SESSION_DIR/config.yaml"
+fi
+# PID_LONG / PID_MAX_THROTTLE: the plan controller's longitudinal setting (tools/controller_model.json)
+if [ -n "${PID_LONG:-}" ]; then
+    sed -i -E "s/^  long_mode: .*/  long_mode: $PID_LONG/" "$SESSION_DIR/config.yaml"
+fi
+# PID_PRESET=plus: the Privileged+ controller (launch boost, pure-pursuit steering, graded braking at
+# cruise), as measured into tools/controller_model.json row "plus". Individual PID_* switches below
+# still apply on top.
+if [ "${PID_PRESET:-}" = plus ]; then
+    sed -i -E "s/^  launch_throttle: .*/  launch_throttle: 1.0/; s/^  speed_scale: .*/  speed_scale: 0.5/; \
+               s/^  speed_offset: .*/  speed_offset: 1.2/; s/^  lookahead_min: .*/  lookahead_min: 2.2/; \
+               s/^  cruise_brake_ratio: .*/  cruise_brake_ratio: 1.25/; s/^  cruise_brake: .*/  cruise_brake: 0.4/; \
+               s/^  avoid_speed_band: .*/  avoid_speed_band: [5.0, 6.7]/" "$SESSION_DIR/config.yaml"
+fi
+if [ -n "${PID_LAUNCH_THROTTLE:-}" ]; then
+    sed -i -E "s/^  launch_throttle: .*/  launch_throttle: $PID_LAUNCH_THROTTLE/" "$SESSION_DIR/config.yaml"
+fi
+if [ -n "${PID_MAX_THROTTLE:-}" ]; then
+    sed -i -E "s/^  max_throttle: .*/  max_throttle: $PID_MAX_THROTTLE/" "$SESSION_DIR/config.yaml"
+fi
+if [ "${CODE_FULL_RES:-0}" = 1 ]; then
+    sed -i -E "s/^  full_res_frames:.*/  full_res_frames: true/" "$SESSION_DIR/config.yaml"
+fi
 ACCESS_EFFECTIVE="$(awk '/^access:/{print $2}' "$SESSION_DIR/config.yaml")"
 PROBE_ADDR="${PROBE_HOST:-$(awk '/^host:/{print $2}' "$PROBE_CONFIG")}:${PROBE_PORT:-$(awk '/^port:/{print $2}' "$PROBE_CONFIG")}"
 cat > "$SESSION_DIR/session.json" <<EOF

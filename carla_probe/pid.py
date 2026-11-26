@@ -45,7 +45,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 
-_STEER_MODES = ("fixed", "adaptive", "lead")
+_STEER_MODES = ("fixed", "adaptive", "lead", "pursuit")
 _LONG_MODES = ("pid", "lead")
 # LEAD's expert-tuned longitudinal regression: the first six weight the (speed, speed_error)
 # feature vector below (km/h, scaled /100), the last is its brake ratio. Fixed constants of the
@@ -77,6 +77,28 @@ class PIDController:
         self.turn = PID(float(cfg["turn_kp"]), float(cfg["turn_ki"]), float(cfg["turn_kd"]), int(cfg["turn_n"]))
         self.speed = PID(float(cfg["speed_kp"]), float(cfg["speed_ki"]), float(cfg["speed_kd"]), int(cfg["speed_n"]))
         self.max_throttle = float(cfg["max_throttle"])
+        # Launch boost: allow `launch_throttle` while the car is more than `launch_margin` m/s below
+        # its target, max_throttle otherwise. Measured 2026-11-19: max_throttle 1.0 everywhere
+        # doubles the launch but turns cruise into a bang-bang limit cycle (+-1.3 m/s around 6 m/s),
+        # because the gains were tuned against the 0.75 cap; boosting only the launch keeps both.
+        self.launch_throttle = float(cfg["launch_throttle"])
+        # Over-speed handling at cruise. Stock: FULL brake once speed > brake_ratio x target, which on a
+        # live route turned a 10% overshoot into a 0.5 s stab of braking and a +-0.8 m/s limit cycle.
+        # Between brake_ratio and cruise_brake_ratio the car coasts; beyond it, it brakes at
+        # cruise_brake. cruise_brake_ratio == brake_ratio and cruise_brake == 1.0 is the stock behaviour.
+        self.cruise_brake_ratio = float(cfg["cruise_brake_ratio"])
+        self.cruise_brake = float(cfg["cruise_brake"])
+        # Cruise gear hold. Measured 2026-11-19: cruising at 6 m/s the automatic gearbox hunts between
+        # 1st, 2nd and neutral (speed std 0.58 m/s, 0.6 m/s single-tick jumps); holding 2nd/3rd gives
+        # 0.17-0.21. Launch stays automatic; within launch_margin of the target a gear is held.
+        self.cruise_gear_hold = bool(cfg["cruise_gear_hold"])
+        # ...but the leaderboard forces manual_gear_shift = False on every control (autonomous_agent.py),
+        # so a gear cannot be held in a benchmark run. What works within the rules: never HOLD a target
+        # inside the band where the gearbox hunts (measured 5.0-6.7 m/s on the MKZ: speed std 0.3-0.7
+        # inside, 0.15 outside). A target in the band is held at the nearer edge. [] = off.
+        band = list(cfg["avoid_speed_band"] or [])
+        self.avoid_band = (float(band[0]), float(band[1])) if band else None
+        self.launch_margin = float(cfg["launch_margin"])
         self.clip_delta = float(cfg["clip_delta"])
         self.brake_speed = float(cfg["brake_speed"])
         self.brake_ratio = float(cfg["brake_ratio"])
@@ -91,6 +113,20 @@ class PIDController:
         self.curvature_gain = float(cfg["curvature_gain"])
         self.brake_zero_steer = bool(cfg["brake_zero_steer"])
         self.steer_rate_limit = float(cfg["steer_rate_limit"])
+        # pursuit: geometric pure pursuit from the rear axle (measured on the MKZ 2020: wheelbase
+        # 2.86 m, rear axle 1.39 m behind the origin, 70 deg max wheel angle). Steady state on an arc
+        # is the arc itself, where the bearing-PID modes cut inside by roughly lookahead^2 / 2R.
+        self.pursuit_gain = float(cfg["pursuit_gain"])
+        self.pursuit_offset = float(cfg["pursuit_offset"])
+        self.pursuit_min = float(cfg["pursuit_min"])
+        self.pursuit_max = float(cfg["pursuit_max"])
+        self.wheelbase = float(cfg["wheelbase_m"])
+        self.rear_axle = float(cfg["rear_axle_m"])
+        self.max_steer_rad = math.radians(float(cfg["max_steer_deg"]))
+        # CARLA scales the steer command down with speed (the vehicle's steering_curve, km/h -> scale);
+        # an exact wheel angle has to be divided back by it.
+        curve = np.asarray(cfg["steering_curve"], dtype=np.float64).reshape(-1, 2)
+        self._steer_curve_kph, self._steer_curve_scale = curve[:, 0], curve[:, 1]
         self._last_steer: Optional[float] = None
         self.long_mode = str(cfg["long_mode"]).strip().lower()
         assert self.long_mode in _LONG_MODES, f"long_mode must be one of {_LONG_MODES}"
@@ -109,9 +145,16 @@ class PIDController:
             desired = spacing / (plan_interval_s * num_pairs)
         else:
             desired = float(target_speed)
-        desired = min(max(desired, 0.0), self.max_speed)
+        desired = self.cruise_target(min(max(desired, 0.0), self.max_speed))
 
         throttle, brake, delta = self._longitudinal(speed, desired)
+
+        if self.steer_mode == "pursuit":
+            steer, la, aim = self._pursuit(wps, speed)
+            steer = self._rate_limit(steer)
+            meta = {"desired_speed": desired, "aim_fwd": float(aim[0]), "aim_left": float(aim[1]),
+                    "angle": 0.0, "lookahead": la, "delta": delta}
+            return steer, throttle, float(brake), meta
 
         # Bearing of the aim point, 0 = straight ahead, + = to the RIGHT (CARLA steer sign).
         right = -aim[1]
@@ -139,7 +182,45 @@ class PIDController:
         self._last_steer = steer
         return steer
 
+    def cruise_target(self, desired: float) -> float:
+        """The target actually held: one inside avoid_speed_band moves to the nearer edge of it."""
+        if self.avoid_band is None:
+            return desired
+        lo, hi = self.avoid_band
+        if lo < desired < hi:
+            return lo - 0.1 if desired - lo < hi - desired else hi + 0.1
+        return desired
+
+    def gear(self, desired: float, speed: float) -> Optional[int]:
+        """The gear to hold at cruise, or None for the automatic gearbox."""
+        if not self.cruise_gear_hold or desired < self.brake_speed or abs(desired - speed) > self.launch_margin:
+            return None
+        for top, g in ((4.5, None), (7.0, 2), (11.0, 3), (16.0, 4)):
+            if desired < top:
+                return g
+        return None
+
     # ------------------------------------------------------------------ lateral
+    def _pursuit(self, wps: np.ndarray, speed: float):
+        la = float(np.clip(self.pursuit_gain * speed + self.pursuit_offset, self.pursuit_min, self.pursuit_max))
+        rear = wps + np.array([self.rear_axle, 0.0])           # the plan as seen from the rear axle
+        pts = np.vstack([np.zeros((1, 2)), rear])
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        cum = np.cumsum(seg)
+        if cum[-1] <= la:
+            aim = rear[-1]
+        else:
+            j = int(np.searchsorted(cum, la))
+            prev = cum[j - 1] if j > 0 else 0.0
+            aim = pts[j] + (la - prev) / max(float(seg[j]), 1e-6) * (pts[j + 1] - pts[j])
+        ld = max(float(np.hypot(aim[0], aim[1])), 1e-3)
+        alpha = math.atan2(aim[1], aim[0])                     # + = aim point to the LEFT
+        wheel = math.atan2(2.0 * self.wheelbase * math.sin(alpha), ld)
+        scale = float(np.interp(speed * 3.6, self._steer_curve_kph, self._steer_curve_scale))
+        steer = float(np.clip(-wheel / (self.max_steer_rad * max(scale, 0.1)), -1.0, 1.0))   # CARLA: + steers RIGHT
+        return steer, la, aim - np.array([self.rear_axle, 0.0])
+
+
     def _lookahead(self, wps: np.ndarray, speed: float) -> float:
         """Arc-length the aim point should sit at, for the interpolating modes. `fixed` has no
         single answer (it snaps to a waypoint), so it reports its nominal aim_dist."""
@@ -185,9 +266,18 @@ class PIDController:
         if self.long_mode == "lead":
             throttle, brake = self._lead_throttle(desired, speed)
             return throttle, brake, 0.0
-        brake = desired < self.brake_speed or (speed / desired) > self.brake_ratio
+        stop = desired < self.brake_speed
+        over = speed / max(desired, 1e-6)
+        if stop or over > max(self.cruise_brake_ratio, self.brake_ratio):
+            brake = 1.0 if stop else self.cruise_brake
+        else:
+            brake = 0.0
+        coast = (not stop) and brake == 0.0 and over > self.brake_ratio
         delta = float(np.clip(desired - speed, 0.0, self.clip_delta))
-        throttle = 0.0 if brake else float(np.clip(self.speed.step(delta), 0.0, self.max_throttle))
+        cap = self.launch_throttle if (desired - speed) > self.launch_margin else self.max_throttle
+        throttle = 0.0 if (brake or coast) else float(np.clip(self.speed.step(delta), 0.0, max(cap, self.max_throttle)))
+        if not (brake or coast) and cap > self.max_throttle:
+            throttle = cap          # well below target: the clipped-error PID would saturate anyway
         return throttle, brake, delta
 
     def _lead_throttle(self, desired: float, speed: float) -> Tuple[float, bool]:

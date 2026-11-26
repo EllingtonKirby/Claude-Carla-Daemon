@@ -105,3 +105,47 @@ def test_brake_zero_steer_drains_the_turn_integral():
     for _ in range(10):
         steer, _t, brake, _m = c.control(plan, 5.0, 0.0, 0.5)   # target 0 -> braking
     assert brake == 1.0 and steer == pytest.approx(0.0, abs=1e-9)
+
+
+# ----------------------------------------------------------------------------- Privileged+ controller knobs
+def _cfg(**over):
+    import yaml
+    from pathlib import Path
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "carla_probe" / "config.yaml").read_text())["pid"]
+    cfg.update(over)
+    return cfg
+
+
+def test_defaults_are_the_stock_controller():
+    from carla_probe.pid import PIDController
+    c = PIDController(_cfg())
+    assert c.gear(6.0, 6.0) is None                       # gear hold off by default
+    _, brake, _ = c._longitudinal(6.7, 6.0)               # 12% over: stock brakes hard
+    assert brake == 1.0
+
+
+def test_gear_hold_only_at_cruise_when_enabled():
+    from carla_probe.pid import PIDController
+    c = PIDController(_cfg(cruise_gear_hold=True))
+    assert c.gear(6.0, 2.0) is None                       # launching: automatic gearbox
+    assert c.gear(6.0, 5.6) == 2 and c.gear(9.0, 8.5) == 3 and c.gear(4.0, 4.0) is None
+    assert c.gear(0.0, 0.0) is None                       # a stop request never holds a gear
+
+
+def test_graded_braking_coasts_then_brakes_gently_but_stops_hard():
+    from carla_probe.pid import PIDController
+    c = PIDController(_cfg(cruise_brake_ratio=1.25, cruise_brake=0.4))
+    thr, brake, _ = c._longitudinal(6.9, 6.0)             # 15% over: coast
+    assert brake == 0.0 and thr == 0.0
+    _, brake, _ = c._longitudinal(8.0, 6.0)               # 33% over: gentle brake
+    assert brake == 0.4
+    _, brake, _ = c._longitudinal(5.0, 0.0)               # asked to stop: full brake
+    assert brake == 1.0
+
+
+def test_a_cruise_target_inside_the_hunting_band_moves_to_its_nearer_edge():
+    from carla_probe.pid import PIDController
+    c = PIDController(_cfg(avoid_speed_band=[5.0, 6.7]))
+    assert c.cruise_target(5.5) == pytest.approx(4.9) and c.cruise_target(6.2) == pytest.approx(6.8)
+    assert c.cruise_target(4.0) == 4.0 and c.cruise_target(8.0) == 8.0
+    assert PIDController(_cfg()).cruise_target(6.0) == 6.0           # off by default

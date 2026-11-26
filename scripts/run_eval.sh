@@ -2,7 +2,7 @@
 # Run one benchmark eval: a probe session driven by an isolated, headless Claude Code driver.
 # See docs/HANDOFF.md §4 for the rules and §5 for what gets recorded.
 #
-#   bash scripts/run_eval.sh <ROUTE> <sensors|privileged> <MODEL> [SESSION_DIR]
+#   bash scripts/run_eval.sh <ROUTE> <sensors|privileged|dense> <MODEL> [SESSION_DIR]
 #   bash scripts/run_eval.sh 2091 sensors claude-opus-5
 #   BENCHMARK=fail2drive bash scripts/run_eval.sh Base_Animals_0075 sensors claude-opus-5
 #
@@ -33,16 +33,48 @@
 #      VLA (config value): on | off -- the learned policy behind the daemon's `drive` command; `on`
 #           needs scripts/run_vla_server.sh running, and adds one sentence to the driver prompt
 #           saying the command exists (recorded in driver.json)
+#      CODE_TOOL (off): on gives the driver a code tool -- it may write Python into its own code dir
+#           and run it with carla_probe/code_runner.py, confined to the session's frames/ (see that
+#           file for what the confinement does and does not stop). Turns on full-resolution frames.
+#           Changes the harness: results with and without it are different measurements.
+#      PERCEPTION_ADDR (unset): host:port of carla_probe/perception_server.py; needs CODE_TOOL=on.
+#           The driver's scripts may call it (and nothing else on the network). Sensors-eligible.
+#      CODE_LIB (unset): a directory copied into the driver's code dir as lib/ before the drive --
+#           e.g. a perception library written offline (tools/teach_perception.py). Hashed into
+#           driver.json; the prompt says it is there.
+#      PRIV_EXTRAS (0): 1 = privileged extras (OPERATOR_GUIDE §8e): actor behaviours, the scorer's rules,
+#           the route's scenarios, predict / plan_check. Privileged track only.
+#      INFO_EXTRAS (0): 1 = on a camera track, the rules text, the route's scenarios and predict /
+#           plan_check on obstacles the driver supplies (OPERATOR_GUIDE §8f)
+#      PID_LONG / PID_MAX_THROTTLE (config): the plan controller's longitudinal setting; must match a
+#           row of tools/controller_model.json for predict to be honest (pid075 / pid100 / lead)
+#      DEBRIEF (prompt): prompt = the closing account the prompt already asks for uses fixed debrief
+#           headings (outcome, what worked, ...), extracted to SESSION_DIR/debrief.md -- nearly free;
+#           resume = also resume the driver's conversation afterwards (scripts/debrief.sh; costs about
+#           as much as the drive again, the resumed context is not served from cache); 0 = neither
 #      DRIVER (claude): claude | baseline_vla | baseline_route -- the two baselines need no LLM
 #           (carla_probe/baseline_driver.py) and skip the sandbox; MODEL is then just a label
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-USAGE="usage: run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> [SESSION_DIR]"
+USAGE="usage: run_eval.sh <ROUTE_ID> <sensors|privileged|dense> <MODEL> [SESSION_DIR]"
 ROUTE="${1:?$USAGE}"
 TRACK="${2:?$USAGE}"
 MODEL="${3:?$USAGE}"
-case "$TRACK" in sensors | privileged) ;; *) echo "ERROR: track must be sensors or privileged" >&2; exit 1 ;; esac
+case "$TRACK" in sensors | privileged | dense) ;; *) echo "ERROR: track must be sensors, privileged or dense" >&2; exit 1 ;; esac
+: "${CODE_TOOL:=off}"
+: "${PERCEPTION_ADDR:=}"
+: "${CODE_LIB:=}"
+case "$CODE_TOOL" in on | off) ;; *) echo "ERROR: CODE_TOOL must be on or off" >&2; exit 1 ;; esac
+if [ "$CODE_TOOL" = off ] && { [ -n "$PERCEPTION_ADDR" ] || [ -n "$CODE_LIB" ]; }; then
+    echo "ERROR: PERCEPTION_ADDR and CODE_LIB need CODE_TOOL=on" >&2; exit 1
+fi
+[ -z "$CODE_LIB" ] || [ -d "$CODE_LIB" ] || { echo "ERROR: CODE_LIB=$CODE_LIB is not a directory" >&2; exit 1; }
+: "${PRIV_EXTRAS:=0}"
+[ "$PRIV_EXTRAS" = 0 ] || [ "$TRACK" = privileged ] || { echo "ERROR: PRIV_EXTRAS=1 needs the privileged track" >&2; exit 1; }
+: "${INFO_EXTRAS:=0}"
+[ "$INFO_EXTRAS" = 0 ] || [ "$TRACK" != privileged ] || { echo "ERROR: INFO_EXTRAS=1 is for the camera tracks (sensors, dense)" >&2; exit 1; }
+export INFO_EXTRAS PRIV_EXTRAS PID_LONG PID_MAX_THROTTLE PID_LAUNCH_THROTTLE PID_PRESET
 : "${DRIVER:=claude}"
 : "${VLA:=}"
 case "$DRIVER" in
@@ -81,6 +113,10 @@ ADDR="127.0.0.1:$PROBE_PORT"
 
 echo "=== eval: $BENCHMARK route $ROUTE, track $TRACK, model $MODEL, driver $DRIVER${VLA:+, vla $VLA}"
 echo "    session: $SESSION_DIR"
+if [ -n "$PERCEPTION_ADDR" ]; then
+    curl -sf "http://$PERCEPTION_ADDR/health" > /dev/null \
+        || { echo "ERROR: no perception service at $PERCEPTION_ADDR (start scripts/run_perception_server.sh)" >&2; exit 1; }
+fi
 if [ "$VLA" = on ]; then
     VLA_ADDR="$(sed -n '/^vla:/,/^[a-z]/p' "$REPO_ROOT/carla_probe/config.yaml" | awk '/addr:/{print $2}')"
     curl -sf "http://$VLA_ADDR/health" > /dev/null \
@@ -88,7 +124,7 @@ if [ "$VLA" = on ]; then
 fi
 
 # ---- 1. session --------------------------------------------------------------------------------
-ACCESS="$TRACK" bash "$REPO_ROOT/scripts/run_session.sh" "$ROUTE" "$SESSION_DIR" > "$SESSION_DIR/launcher.log" 2>&1 &
+CODE_FULL_RES="$([ "$CODE_TOOL" = on ] && echo 1 || echo 0)" ACCESS="$TRACK" bash "$REPO_ROOT/scripts/run_session.sh" "$ROUTE" "$SESSION_DIR" > "$SESSION_DIR/launcher.log" 2>&1 &
 LAUNCH_PID=$!
 abort() {
     echo "    aborting: $1" >&2
@@ -99,7 +135,9 @@ abort() {
     exit 1
 }
 echo "    waiting for the route to load (log: $SESSION_DIR/launcher.log)"
-if ! access="$("$PY" -m carla_probe.client "$ADDR" --wait "$LOAD_TIMEOUT_S" status 2>/dev/null \
+# timeout: the client's --wait bounds CONNECTING, not the reply; a daemon that accepts and never
+# answers (a CARLA that died mid-load) otherwise hangs this script forever (11 h, 2026-11-18).
+if ! access="$(timeout $((LOAD_TIMEOUT_S + 60)) "$PY" -m carla_probe.client "$ADDR" --wait "$LOAD_TIMEOUT_S" status 2>/dev/null \
         | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["status"]["access"])')"; then
     abort "session did not come up; see $SESSION_DIR/evaluator.log and carla.log"
 fi
@@ -121,12 +159,24 @@ EOF
     "$PY" "$REPO_ROOT/tools/summarize_results.py" "$SESSION_DIR" || true
     exit 0
 fi
+CODE_DIR="$DRIVER_WS/code"
+CODE_ALLOW=""
+CODE_ENV=""
+DRIVER_TOOLS="Bash,Read"
+if [ "$CODE_TOOL" = on ]; then
+    mkdir -p "$CODE_DIR"
+    [ -z "$CODE_LIB" ] || cp -r "$CODE_LIB" "$CODE_DIR/lib"
+    CODE_ALLOW='"Bash('"$PY"' -m carla_probe.code_runner:*)", "Write(/'"$CODE_DIR"'/**)", "Edit(/'"$CODE_DIR"'/**)", "Read(/'"$CODE_DIR"'/**)",'
+    CODE_ENV=', "CARLA_PROBE_FRAMES": "'"$SESSION_DIR/frames"'", "CARLA_PROBE_CODE_DIR": "'"$CODE_DIR"'", "CARLA_PROBE_PERCEPTION_ADDR": "'"$PERCEPTION_ADDR"'"'
+    DRIVER_TOOLS="Bash,Read,Write,Edit"
+fi
 cat > "$DRIVER_WS/settings.json" <<EOF
 {
   "sandbox": {"enabled": false},
-  "env": {"PYTHONPATH": "$REPO_ROOT", "CARLA_PROBE_ADDR": "$ADDR"},
+  "env": {"PYTHONPATH": "$REPO_ROOT", "CARLA_PROBE_ADDR": "$ADDR"$CODE_ENV},
   "permissions": {
-    "allow": ["Bash($PY -m carla_probe.client:*)",
+    "allow": [$CODE_ALLOW
+              "Bash($PY -m carla_probe.client:*)",
               "Read(/$SESSION_DIR/frames/**)",
               "Read(/$REPO_ROOT/docs/OPERATOR_GUIDE.md)",
               "Read(/$REPO_ROOT/benchmark/PROTOCOL.md)",
@@ -153,6 +203,19 @@ $REPO_ROOT/docs/OPERATOR_GUIDE.md and $REPO_ROOT/benchmark/PROTOCOL.md, and foll
 Drive the route to the end. Stop when an advance returns route_end or the client reports that
 the daemon closed the connection. Then reply with a short account of the drive.
 EOF
+if [ "${DEBRIEF:-prompt}" != 0 ]; then
+    cat >> "$DRIVER_WS/prompt.txt" <<'EOF'
+Write that account as a debrief for the people improving this harness and for future drivers, under
+exactly these headings, concrete (numbers, commands, moments) and under 450 words:
+## Outcome (the result you believe you got, and anything scored against you)
+## What worked
+## What did not work (mistakes, near misses, wasted time)
+## Surprises (anything about the car, controller, daemon, tools or scenario that differed from what
+the guide or the replies led you to expect)
+## What would have helped (information, tools or guide changes; general lessons, not route tactics)
+## One-line lesson
+EOF
+fi
 if [ "$VLA" = on ]; then
     cat >> "$DRIVER_WS/prompt.txt" <<EOF
 
@@ -161,22 +224,68 @@ your primary driving primitive. You tell it what you see and what to do, in its 
 steers and controls speed between your decisions.
 EOF
 fi
+if [ "$PRIV_EXTRAS" = 1 ]; then
+    cat >> "$DRIVER_WS/prompt.txt" <<EOF
+
+This session has the privileged extras (OPERATOR_GUIDE.md §8e): every actor's type and how it
+treats you, the scorer's rules with its live state, the scenarios ahead, and the predict and
+plan_check commands for where your own car will go.
+EOF
+fi
+if [ "$INFO_EXTRAS" = 1 ]; then
+    cat >> "$DRIVER_WS/prompt.txt" <<EOF
+
+This session has the info extras (OPERATOR_GUIDE.md §8f): the scorer's rules as text, the scenarios
+on your route, and the predict and plan_check commands for where your own car will go; plan_check
+checks a plan against obstacles you estimate yourself.
+EOF
+fi
+if [ "$CODE_TOOL" = on ]; then
+    cat >> "$DRIVER_WS/prompt.txt" <<EOF
+
+This session has the code tool (OPERATOR_GUIDE.md §8b). You may write Python files into
+$CODE_DIR with the Write and Edit tools and run them, one per Bash call, as:
+$PY -m carla_probe.code_runner $CODE_DIR/<file>.py [args]
+A script may read the frames a percept returns and the camera model at <frames_dir>/../cameras.json,
+and nothing else in the session. Use it for anything measurable: distances, gaps, clearances.
+EOF
+    if [ -n "$PERCEPTION_ADDR" ]; then
+        cat >> "$DRIVER_WS/prompt.txt" <<EOF
+Your scripts may also call the perception service at http://$PERCEPTION_ADDR (metric depth and
+segmentation from a camera image; OPERATOR_GUIDE.md §8c).
+EOF
+    fi
+    if [ -n "$CODE_LIB" ]; then
+        cat >> "$DRIVER_WS/prompt.txt" <<EOF
+A perception library is already installed at $CODE_DIR/lib: read its README.md before driving.
+EOF
+    fi
+fi
 cp "$DRIVER_WS/prompt.txt" "$DRIVER_WS/settings.json" "$SESSION_DIR/"
 # --setting-sources "" is load-bearing for isolation, not just a settings.json switch: it also stops
 # CLAUDE.md / memory being loaded, from the sandbox AND from ~/.claude. Verified -- with the flag a
 # CLAUDE.md in the working directory is ignored; without it, its contents reach the driver. Dropping
 # it would silently add an instruction channel outside the canonical prompt, and one that nothing
 # hashes into driver.json. Leave it empty.
-DRIVER_FLAGS=(--permission-mode dontAsk --tools "Bash,Read" --setting-sources "" --settings "$DRIVER_WS/settings.json"
+DRIVER_FLAGS=(--permission-mode dontAsk --tools "$DRIVER_TOOLS" --setting-sources "" --settings "$DRIVER_WS/settings.json"
               --autocompact "$AUTOCOMPACT")
 
 # ---- 3. isolation check --------------------------------------------------------------------------
 if [ "$ISOLATION_CHECK" = "1" ]; then
     echo "    isolation check ($CHECK_MODEL)"
-    (cd "$DRIVER_WS" && claude -p "This is a permissions test. Try each, one tool call at a time, even if you expect a denial: (1) Bash: cat $SESSION_DIR/session.json (2) Bash: ls $SESSION_DIR (3) Read tool on $SESSION_DIR/config.yaml. Then say done." \
+    CHECK_PROMPT="This is a permissions test. Try each, one tool call at a time, even if you expect a denial: (1) Bash: cat $SESSION_DIR/session.json (2) Bash: ls $SESSION_DIR (3) Read tool on $SESSION_DIR/config.yaml."
+    MIN_CALLS=3
+    if [ "$CODE_TOOL" = on ]; then
+        # The tool permissions are probed by the model; the code tool's own confinement is probed
+        # below, deterministically -- a checker model may (reasonably) refuse to run a script it
+        # recognises as a way around the denials it just got, and a refusal is not a pass.
+        CHECK_PROMPT="$CHECK_PROMPT (4) Write tool: create $SESSION_DIR/../leak_outside.py containing print(1)."
+        MIN_CALLS=4
+    fi
+    (cd "$DRIVER_WS" && claude -p "$CHECK_PROMPT Then say done." \
         --model "$CHECK_MODEL" --output-format stream-json --verbose "${DRIVER_FLAGS[@]}" \
         < /dev/null > "$DRIVER_WS/isolation_check.jsonl" 2>&1) || true
-    if ! "$PY" - "$DRIVER_WS/isolation_check.jsonl" <<'PY'
+    if ! "$PY" - "$DRIVER_WS/isolation_check.jsonl" "$MIN_CALLS" <<'PY'
 import json, sys
 calls, leaked = 0, []
 for line in open(sys.argv[1]):
@@ -194,15 +303,28 @@ for line in open(sys.argv[1]):
             calls += 1
         if c.get("type") == "tool_result":
             text = json.dumps(c.get("content"))
-            if any(s in text for s in ("tm_seed", "config.yaml", "session.json", "access:")) and "denied" not in text:
+            if any(s in text for s in ("tm_seed", "config.yaml", "session.json", "access:", "result.json", "evaluator.log")) and "denied" not in text:
                 leaked.append(text[:120])
-if calls < 3 or leaked:
+if calls < int(sys.argv[2]) or leaked:
     print(f"    isolation check FAILED: {calls} tool calls, leaks: {leaked}", file=sys.stderr)
     sys.exit(1)
 PY
     then
         abort "driver sandbox is not isolated (transcript: $DRIVER_WS/isolation_check.jsonl)"
     fi
+    [ ! -e "$SESSION_DIR/../leak_outside.py" ] || abort "the driver could write outside its code dir"
+fi
+if [ "$CODE_TOOL" = on ]; then
+    # The confinement itself: a script that tries to list the session and read session.json, run
+    # through the code tool with exactly the driver's environment. It must be refused.
+    printf '%s\n' "import os" "print(os.listdir('$SESSION_DIR'))" "print(open('$SESSION_DIR/session.json').read())" > "$CODE_DIR/leak.py"
+    leak_out="$(cd "$DRIVER_WS" && PYTHONPATH="$REPO_ROOT" CARLA_PROBE_FRAMES="$SESSION_DIR/frames" CARLA_PROBE_CODE_DIR="$CODE_DIR" \
+        CARLA_PROBE_PERCEPTION_ADDR="$PERCEPTION_ADDR" "$PY" -m carla_probe.code_runner "$CODE_DIR/leak.py" 2>&1 || true)"
+    rm -f "$CODE_DIR/leak.py"
+    if ! printf '%s' "$leak_out" | grep -q "denied" || printf '%s' "$leak_out" | grep -q -e tm_seed -e evaluator.log -e carla.log; then
+        abort "the code tool is not confined: $(printf '%s' "$leak_out" | head -c 300)"
+    fi
+    echo "    code tool confinement check: refused, as it must be"
 fi
 
 
@@ -210,6 +332,8 @@ fi
 cat > "$SESSION_DIR/driver.json" <<EOF
 {"model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "driver": "claude", "vla": "${VLA:-off}", "autocompact": "$AUTOCOMPACT",
+ "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "info_extras": "$INFO_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "pid_launch_throttle": "${PID_LAUNCH_THROTTLE:-config}", "pid_preset": "${PID_PRESET:-none}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB",
+ "code_lib_sha256": "$([ -n "$CODE_LIB" ] && (cd "$CODE_LIB" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1))",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}
 EOF
@@ -244,5 +368,24 @@ if [ "$stopped_early" = true ]; then
         > /dev/null 2>&1 || true
 fi
 wait "$LAUNCH_PID" || true
+# Debrief (scripts/debrief.sh): resume the driver's own conversation once the route is over and ask what
+# it learned. A follow-up turn, never part of the drive. DEBRIEF=0 skips it.
+if [ "${DEBRIEF:-prompt}" = prompt ] && [ "$DRIVER" = claude ]; then
+    python3 - "$SESSION_DIR" <<'PY2' || echo "    no debrief in the closing account"
+import json, sys
+s = sys.argv[1]; out = ""
+for line in open(f"{s}/driver_transcript.jsonl"):
+    if '"type":"result"' in line:
+        out = json.loads(line).get("result") or out
+i = out.find("## Outcome")
+if i < 0:
+    sys.exit(1)
+open(f"{s}/debrief.md", "w").write(out[i:].strip() + "\n")
+PY2
+elif [ "${DEBRIEF:-prompt}" = resume ] && [ "$DRIVER" = claude ]; then
+    bash "$REPO_ROOT/scripts/debrief.sh" "$SESSION_DIR" || echo "    debrief failed (see $SESSION_DIR/debrief_stderr.log)"
+fi
+# What the driver wrote is part of the result: keep it beside the transcript.
+[ "$CODE_TOOL" != on ] || cp -r "$CODE_DIR" "$SESSION_DIR/driver_code" 2>/dev/null || true
 echo "=== eval done -> $SESSION_DIR"
 "$PY" "$REPO_ROOT/tools/summarize_results.py" "$SESSION_DIR" || true
