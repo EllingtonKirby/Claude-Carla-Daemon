@@ -155,6 +155,31 @@ the background; this file has the current state and the open tasks.
   practice-route experiment (same-scenario Bench2Drive route before each test route) proposed.
   Budget for both to be set after the Thursday-night B3s+L results.
 
+## Repo layout from 11-26 evening
+
+- PRs #1, #3, #4, #5 are merged; `main` on the fork has everything (PR #2, the BLUE oracle fix, is
+  still open). Work from `main`: `~/workspace/claude_carla_daemon_codex` is on the `main` branch;
+  `~/workspace/ccd_priv2` (where the lanes run) sits on the same commit, detached. New work goes on a
+  branch and a PR; the user merges, then both worktrees are brought back to `origin/main`.
+- `ccd_b5`, `ccd_exp`, `ccd_base` are old worktrees, fully merged (`ccd_b5/sessions/scenes_tfv6` holds
+  the TransFuser validation captures).
+
+## Thursday 11-26 night
+
+- The quota gate read `allowed_warning` (weekly usage above ~80%) as blocked, so B3s+L sat idle from
+  18:01 to 21:33 UTC. Fixed in `quota_gate.sh` (allowed_warning counts as allowed; the limits and the
+  cap still apply) and resumed with `b3sL_resume.sh`.
+- B3s+L uses a library frozen at the PR #4 merge (`~/workspace/frozen_libs/driver_lib_b3sL`, no
+  `scene` module), so it is the condition that was agreed even though `main` now has scene.py.
+
+## Order of runs (proposed 11-26)
+
+1. Thu night: B3s+L (perception library + guide rule), 10 routes.
+2. Fri night, after the weekly reset: B5 (TransFuser scene tool on top of B3s+L), 10 routes.
+3. Next: training routes with a working memory (not built yet): 10 training routes driven in
+   sequence with a shared memory, then the 10 test routes with it frozen.
+4. Parked: teacher/student.
+
 ## Candidate next steps (none agreed yet; ask the user)
 
 1. Suggest the §5.1 camera-mount fix (0bfa4af) and the oracle fix (6ef0435) to whoever owns the shared
