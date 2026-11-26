@@ -44,6 +44,9 @@
 #           driver.json; the prompt says it is there.
 #      PRIV_EXTRAS (0): 1 = privileged extras (OPERATOR_GUIDE §8e): actor behaviours, the scorer's rules,
 #           the route's scenarios, predict / plan_check. Privileged track only.
+#      TFV6 (0): 1 = TransFuser v6 perception (B5): the agent swaps CAM_FRONT_LEFT/RIGHT for TransFuser's
+#           6-camera ring (TFV6_CAMERAS=1) and the driver's lib/scene.py reads its boxes and map through
+#           the perception service (which must run with --tfv6-addr). Needs PERCEPTION_ADDR.
 #      INFO_EXTRAS (0): 1 = on a camera track, the rules text, the route's scenarios and predict /
 #           plan_check on obstacles the driver supplies (OPERATOR_GUIDE §8f)
 #      PID_LONG / PID_MAX_THROTTLE (config): the plan controller's longitudinal setting; must match a
@@ -72,6 +75,13 @@ fi
 [ -z "$CODE_LIB" ] || [ -d "$CODE_LIB" ] || { echo "ERROR: CODE_LIB=$CODE_LIB is not a directory" >&2; exit 1; }
 : "${PRIV_EXTRAS:=0}"
 [ "$PRIV_EXTRAS" = 0 ] || [ "$TRACK" = privileged ] || { echo "ERROR: PRIV_EXTRAS=1 needs the privileged track" >&2; exit 1; }
+: "${TFV6:=0}"
+[ "$TFV6" = 0 ] || [ -n "$PERCEPTION_ADDR" ] || { echo "ERROR: TFV6=1 needs PERCEPTION_ADDR (a perception service with --tfv6-addr)" >&2; exit 1; }
+if [ "$TFV6" = 1 ]; then
+    [ "$(curl -s -X POST "http://$PERCEPTION_ADDR/scene" -d '{}' -o /dev/null -w '%{http_code}')" != 404 ] \
+        || { echo "ERROR: the perception service at $PERCEPTION_ADDR has no TransFuser scene service (--tfv6-addr)" >&2; exit 1; }
+    export TFV6_CAMERAS=1
+fi
 : "${INFO_EXTRAS:=0}"
 [ "$INFO_EXTRAS" = 0 ] || [ "$TRACK" != privileged ] || { echo "ERROR: INFO_EXTRAS=1 is for the camera tracks (sensors, dense)" >&2; exit 1; }
 export INFO_EXTRAS PRIV_EXTRAS PID_LONG PID_MAX_THROTTLE PID_LAUNCH_THROTTLE PID_PRESET
@@ -260,6 +270,12 @@ EOF
 A perception library is already installed at $CODE_DIR/lib: read its README.md before driving.
 EOF
     fi
+    if [ "$TFV6" = 1 ]; then
+        cat >> "$DRIVER_WS/prompt.txt" <<EOF
+This session also runs TransFuser v6 perception: lib/scene.py (see the README) gives road users as
+boxes and a bird's-eye map of road, lane markings and traffic lights.
+EOF
+    fi
 fi
 cp "$DRIVER_WS/prompt.txt" "$DRIVER_WS/settings.json" "$SESSION_DIR/"
 # --setting-sources "" is load-bearing for isolation, not just a settings.json switch: it also stops
@@ -332,7 +348,7 @@ fi
 cat > "$SESSION_DIR/driver.json" <<EOF
 {"model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "driver": "claude", "vla": "${VLA:-off}", "autocompact": "$AUTOCOMPACT",
- "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "info_extras": "$INFO_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "pid_launch_throttle": "${PID_LAUNCH_THROTTLE:-config}", "pid_preset": "${PID_PRESET:-none}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB",
+ "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "info_extras": "$INFO_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "pid_launch_throttle": "${PID_LAUNCH_THROTTLE:-config}", "pid_preset": "${PID_PRESET:-none}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB", "tfv6": "$TFV6",
  "code_lib_sha256": "$([ -n "$CODE_LIB" ] && (cd "$CODE_LIB" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1))",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}

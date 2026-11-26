@@ -89,6 +89,10 @@ class TFv6:
             "speed": torch.tensor([0.0], device=self.device),
             "command": one_hot, "next_command": one_hot.clone(),
             "town": np.array(["Town00"]),
+            # The checkpoint keeps an auxiliary radar-detection head that its planner does not use
+            # (use_radar_detection=False); it still expects the tensor, so it gets an empty one.
+            "radar": torch.zeros((1, self.cfg.num_radar_sensors * self.cfg.num_radar_points_per_sensor, 5),
+                                 device=self.device),
         }
         with self.lock:
             pred = self.inf.forward(data)

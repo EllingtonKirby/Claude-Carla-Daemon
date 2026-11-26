@@ -5,7 +5,7 @@
 # Operator infrastructure. Scripted driving (no model): costs only wall-clock.
 OUT="$1"; SLOT="$2"; shift 2
 source "$HOME/workspace/hornet_envrc"
-REPO="$HOME/workspace/ccd_priv2"
+REPO="$HOME/workspace/ccd_b5"
 cd "$REPO" && source scripts/env.sh > /dev/null 2>&1
 export CARLA_PORT=$((20000 + 10 * SLOT)) PROBE_PORT=$((8790 + SLOT)) GPU_RANK=0
 for r in "$@"; do

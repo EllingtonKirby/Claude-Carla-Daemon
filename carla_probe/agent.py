@@ -242,12 +242,19 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         self._record_every = int(cfg["record"]["camera_every_n_ticks"])
         self._ego_body = {k: float(cfg["ego"][k]) for k in ("front_m", "rear_m", "half_width_m")}
         self._cameras = [dict(c) for c in cfg["cameras"]]
-        # TFV6_CAMERAS=1: TransFuser v6's own 6-camera ring (LEAD, CARLA_LEADERBOARD2_6CAMERAS), declared
-        # as ordinary sensors so the run stays sensors-eligible. Used only to feed the TransFuser
-        # perception service (carla_probe/tfv6_server.py): each percept writes them stitched left to
-        # right as TFV6_rgb.jpg (JPEG quality 90, as LEAD's own agent does), not in the driver's files.
+        # TFV6_CAMERAS=1: TransFuser v6's own 6-camera ring (LEAD, CARLA_LEADERBOARD2_6CAMERAS), for
+        # the TransFuser perception service (carla_probe/tfv6_server.py). The leaderboard allows at
+        # most 8 RGB cameras, so the ring REPLACES CAM_FRONT_LEFT / CAM_FRONT_RIGHT: the driver keeps
+        # CAM_FRONT and CAM_BACK and gets the six ring cameras as views of its own (TFV6_1 front-left,
+        # TFV6_3 front-right by default; the others on request). Each percept also writes the ring
+        # stitched left to right as TFV6_rgb.jpg (JPEG quality 90, as LEAD's own agent does).
         self._tfv6_cameras = TFV6_CAMERAS if os.environ.get("TFV6_CAMERAS", "0") == "1" else []
+        if self._tfv6_cameras:
+            self._cameras = [c for c in self._cameras if c["id"] in ("CAM_FRONT", "CAM_BACK")] + \
+                [dict(c) for c in self._tfv6_cameras]
         self._percept_cams = list(cfg["percept"]["cams"])
+        if self._tfv6_cameras:
+            self._percept_cams = ["CAM_FRONT", "TFV6_1", "TFV6_3", "CAM_BACK"]
         self._percept_scale = float(cfg["percept"]["scale"])
         self._percept_on_advance = bool(cfg["percept"]["on_advance"])
         self._full_res_frames = bool(cfg["code"]["full_res_frames"])
@@ -341,7 +348,6 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
              "width": c["width"], "height": c["height"], "fov": c["fov"]}
             for c in self._cameras
         ]
-        specs += [{"type": "sensor.camera.rgb", **c} for c in self._tfv6_cameras]
         specs += [
             {"type": "sensor.other.imu", "id": "IMU", "x": 0.0, "y": 0.0, "z": 0.0,
              "roll": 0.0, "pitch": 0.0, "yaw": 0.0, "sensor_tick": 0.05},
@@ -1081,7 +1087,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
 
     def _write_tfv6(self, out_dir: Path) -> None:
         """TransFuser's 6 cameras stitched left to right (its training order), for the TransFuser
-        perception service. Not listed in the percept's files: the driver's views are unchanged."""
+        perception service. Not listed in the percept's files."""
         assert self._last_input is not None
         imgs = [np.ascontiguousarray(self._last_input[c["id"]][1][:, :, :3]) for c in self._tfv6_cameras]
         cv2.imwrite(str(out_dir / "TFV6_rgb.jpg"), np.concatenate(imgs, axis=1), [cv2.IMWRITE_JPEG_QUALITY, 90])
