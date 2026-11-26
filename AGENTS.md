@@ -12,9 +12,9 @@ scores. See [the design](docs/DESIGN.md) for the daemon and leaderboard integrat
   [the interactive workflow](docs/HANDOFF.md#44-interactive-driving-with-codex-or-claude-code) and
   [the driving guide](docs/OPERATOR_GUIDE.md). Label the run as interactive.
 - **Running a scored evaluation:** The operator launches `scripts/run_eval.sh <route> <track> <model>`.
-  The launcher supports an isolated Claude Code driver and scripted baselines. Codex can operate
-  the harness and drive interactively. A scored Codex driver requires its own isolation and
-  preflight checks. Use [the benchmark protocol](benchmark/PROTOCOL.md) for run and reporting rules.
+  Select `DRIVER=codex` for the isolated Codex adapter. Claude Code is the default and scripted
+  baselines are also available. Use [the benchmark protocol](benchmark/PROTOCOL.md) for run and
+  reporting rules and [the Codex setup](docs/HANDOFF.md#45-scored-codex-runs) for adapter details.
 
 ## Repo conventions
 

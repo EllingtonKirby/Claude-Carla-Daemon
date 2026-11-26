@@ -244,8 +244,8 @@ rule 2). Env overrides: `GPU_RANK`, `CARLA_PORT`,
 `PROBE_PORT` (for parallel runs), `SIM_RECORD`, `RECORD_CAMERA_EVERY` (§5.1), `LOAD_TIMEOUT_S`,
 `AUTOCOMPACT`, `ISOLATION_CHECK=0`, `CHECK_MODEL`, `VLA=on` (the learned policy; needs
 `scripts/run_vla_server.sh` running, and appends one sentence to the driver prompt),
-`DRIVER=baseline_vla | baseline_route` (no LLM: the policy told nothing, or the blind
-route-follower; MODEL is then a label). What it does:
+`DRIVER=codex` (see §4.5), `DRIVER=baseline_vla | baseline_route` (no LLM: the policy told
+nothing, or the blind route-follower; MODEL is then a label). What it does:
 
 1. Launches `scripts/run_session.sh` into a fresh `sessions/<stamp>_route_<id>_<track>/` and waits
    until the route is loaded and paused, checking the reported `access`.
@@ -255,7 +255,7 @@ route-follower; MODEL is then a label). What it does:
    agent failure) and records `driver_stopped_before_route_end` in `driver.json`. Then it waits
    for scoring and prints the summary.
 
-**What reaches the driver** is `prompt.txt`, the three documents it names, and whatever the daemon
+**What reaches the Claude Code driver** is `prompt.txt`, the three documents it names, and whatever the daemon
 returns — nothing else. `--setting-sources ""` is what keeps it that way: it blocks CLAUDE.md and
 memory loading, from the driver's own working directory and from `~/.claude` alike (verified: with
 the flag a CLAUDE.md in the working directory is ignored, without it its contents reach the driver).
@@ -308,8 +308,7 @@ Notes:
    configurations above. Record every scheduled attempt, including aborts. Report DS, RC, IS,
    infractions, commands, wall time, and the per-route spread with the settings in
    [the reporting protocol](../benchmark/PROTOCOL.md#reporting). Analyze privileged or dense
-   variants separately. A Codex-versus-Claude score comparison needs an isolated Codex launcher
-   with equivalent access and a verified preflight.
+   variants separately. Use the scored Codex adapter in §4.5 for a Codex-versus-Claude comparison.
 4. **Validate generalization separately.** Once the setup is stable, validate the custom
    Fail2Drive build on both routes in `benchmark/routes/f2d_pair.txt` (§3.3). Report paired
    Base-to-Generalization change using `tools/f2d_score.py`. Reserve the held-out routes for
@@ -339,6 +338,46 @@ camera images using the agent's image viewer, plan from the current scene, and a
 `apply_plan` and an observation-based `why=`. Repeat until `route_end` or the connection closes.
 Follow the driving rules in [the protocol](../benchmark/PROTOCOL.md), and summarize the session
 afterwards. This workflow is for debugging and practice. Scored evaluations use §4.2.
+
+### 4.5 Scored Codex runs
+
+Authenticate the Codex CLI with `codex login`. Set `DRIVER=codex` when launching an evaluation.
+The adapter uses a fresh workspace and Codex home, with the CLI's file-based authentication or
+`OPENAI_API_KEY`. It disables the shell, web search, external apps and subagents. A local MCP
+server exposes the probe, the three driver documents, and artifacts named in probe replies.
+With `CODE_TOOL=on`, it also exposes script editing in the private code directory and execution
+via the existing audited Python runner (§8b of the driving guide). That runner enforces the same
+file and network rules as the Claude Code arm and has the same native-extension limitations.
+
+Before driving, the launcher verifies that Codex successfully reads the protocol and calls
+`status` and is denied a read of the session metadata. The code arm also checks that an
+out-of-directory write is denied and runs the launcher’s code confinement check. A failed
+preflight ends the session before a driving command. Inspect `isolation_check.jsonl` and
+`isolation_check_stderr.log` when diagnosing these failures. Record the model, CLI version,
+reasoning effort, prompt and document hashes, and `codex_config.toml` with the result. Codex uses
+its selected model's default reasoning effort unless `CODEX_REASONING_EFFORT` is set.
+
+The following mirrors the configurations of the recorded Claude Code experiments. Use the
+same `dev10` route IDs, `TM_SEED=0`, default route budget, and fresh session directories.
+
+| Arm | Settings | Repeat count |
+|---|---|---|
+| A1 Privileged+ | `privileged`, `PRIV_EXTRAS=1 PID_PRESET=plus` | Three per route |
+| B3s+L | `sensors`, `CODE_TOOL=on PID_PRESET=plus`, strong perception and the frozen driver library | One per route |
+
+```bash
+DRIVER=codex PRIV_EXTRAS=1 PID_PRESET=plus \
+  bash scripts/run_eval.sh "$route" privileged gpt-6.2-sol
+
+# Start the strong backend with scripts/run_perception_server.sh using BACKEND=strong.
+DRIVER=codex CODE_TOOL=on PID_PRESET=plus PERCEPTION_ADDR=127.0.0.1:8795 \
+  CODE_LIB="$frozen_library" bash scripts/run_eval.sh "$route" sensors gpt-6.2-sol
+```
+
+Use the library snapshot and backend from the Claude batch metadata when comparing results.
+Keep `VLA`, `INFO_EXTRAS`, and `TFV6` off for these runs. The library in the current checkout
+also supports the separate B5 arm, which uses TransFuser perception. Report differences in
+the source commits, Codex and Claude Code tool interfaces, and reference coverage.
 
 ## 5. Recording and analysis
 

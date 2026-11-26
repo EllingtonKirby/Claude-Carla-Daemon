@@ -74,21 +74,22 @@ python tools/f2d_score.py sessions/f2d_*          # Fail2Drive: Base vs Generali
 
 ## Run an evaluation
 
-The scored launcher runs an isolated, headless Claude Code driver by default. Install and
-authenticate the Claude CLI, then select an available model ID. The route-following baseline
-uses the same scoring pipeline and needs no model account.
+The scored launcher supports headless Claude Code and Codex. Authenticate the CLI you want
+to run and select a model available to that account. The route-following baseline uses the same
+scoring pipeline and needs no model account.
 
 ```bash
 DRIVER=baseline_route bash scripts/run_eval.sh 2091 sensors route-follower
 bash scripts/run_eval.sh 2091 sensors '<claude-model-id>'
+DRIVER=codex bash scripts/run_eval.sh 2091 sensors gpt-6.2-sol
 ```
 
 Follow [the experiment sequence](docs/HANDOFF.md#43-first-experiments) for smoke tests, repeated
 Bench2Drive runs, and the separate Fail2Drive check.
 
 For practice and debugging, use [the interactive workflow](docs/HANDOFF.md#44-interactive-driving-with-codex-or-claude-code)
-from either Codex or Claude Code. Codex can also launch and analyze scored runs as the operator.
-Scored Codex driving requires a separate driver adapter and isolation check.
+from either Codex or Claude Code. For scored Codex runs, see
+[the adapter and its isolation preflight](docs/HANDOFF.md#45-scored-codex-runs).
 
 ## Docs
 
