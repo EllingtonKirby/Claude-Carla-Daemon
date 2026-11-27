@@ -148,6 +148,27 @@ command from the repo root. The `.venv` it builds links to `/opt/uv-python`, whi
 that image: a venv built there does not run on other hosts, and vice versa (§2, dangling `.venv`).
 Launch runs detached (`vai_job_exec` with `detach`, or `setsid nohup` as in §4.2).
 
+**Strong perception (`CODE_TOOL=on PERCEPTION_ADDR=...`).** Its torch (≥ 2.7) needs glibc 2.28, and
+the b2d image is Ubuntu 18.04 (2.27), so the service runs in a *second* job on the same machine,
+from `Dockerfile_rtx` (Ubuntu 22.04, uid 1000, carries the HF token; the account needs access to
+the gated `facebook/sam3`). Same-machine containers reach each other on Docker's bridge
+(`hostname -I` gives the 172.17.x address). Ask for 2 GPUs: on an 11 GB 2080 Ti, Depth Pro 2 and
+SAM 3 do not fit on one card without Flash Attention. Turing has no native bf16, so torch emulates it.
+Expect ~0.25 s per depth call and ~2.5 s per six-prompt segment call. Build the venv once with the
+cu126 wheels (driver 550 predates cu128) and keep the weight caches on NFS:
+
+```bash
+# perception job (Dockerfile_rtx, 2 GPUs). Venv: scripts/setup_perception2.sh's steps, with
+# --index-url .../whl/cu126 for torch==2.10.0 and UV_PYTHON_INSTALL_DIR on NFS.
+C=~/workspace/.cache_perception
+env -u LD_LIBRARY_PATH TORCH_HOME=$C/torch HF_HUB_CACHE=$C/hf BACKEND=strong \
+    PERCEPTION_PY=~/workspace/venv_perception2/bin/python PERCEPTION_HOST=0.0.0.0 \
+    PERCEPTION_DEVICE=cuda:0 PERCEPTION_SEGMENT_DEVICE=cuda:1 bash scripts/run_perception_server.sh
+# CARLA job (Dockerfile_b2d), with the perception job's address:
+sudo -u carla -H env CODE_TOOL=on PERCEPTION_ADDR=172.17.0.X:8795 PID_PRESET=plus \
+    bash $R/scripts/vai_carla.sh bash scripts/run_eval.sh <ROUTE> sensors <MODEL>
+```
+
 ## 3. Validate an install
 
 Do this on every new machine, and after changing `agent.py`, `config.yaml` or the patch. It
