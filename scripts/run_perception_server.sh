@@ -7,6 +7,9 @@
 #   BACKEND=strong PERCEPTION_PY=~/workspace/venv_perception2/bin/python bash scripts/run_perception_server.sh
 #
 # Env: PERCEPTION_PY (required)  PERCEPTION_PORT (8795)  PERCEPTION_DEVICE (cuda:0)
+#      PERCEPTION_HOST (127.0.0.1): 0.0.0.0 when the daemon runs in another container (vai, HANDOFF §2.1)
+#      PERCEPTION_SEGMENT_DEVICE (PERCEPTION_DEVICE, strong only): SAM 3 on its own GPU -- needed on 11 GB
+#        pre-Ampere cards (RTX 2080 Ti), where the two models do not fit together without Flash Attention
 #      BACKEND (legacy | strong): legacy = Depth Anything V2 + Mask2Former / transformers SAM 3;
 #        strong = Depth Pro 2 + SAM 3 from their own packages (scripts/setup_perception2.sh)
 #      SEGMENTER (auto | sam3 | panoptic, legacy only): auto tries SAM 3 (gated: needs HF_TOKEN) and falls back
@@ -18,9 +21,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${PERCEPTION_PY:?set PERCEPTION_PY to an interpreter with torch + transformers>=4.57}"
 if [ "${BACKEND:-legacy}" = strong ]; then
     exec "$PERCEPTION_PY" "$REPO_ROOT/carla_probe/perception_server.py" --port "${PERCEPTION_PORT:-8795}" \
+        --host "${PERCEPTION_HOST:-127.0.0.1}" ${PERCEPTION_SEGMENT_DEVICE:+--segment-device "$PERCEPTION_SEGMENT_DEVICE"} \
         --device "${PERCEPTION_DEVICE:-cuda:0}" --backend strong --depth-preset "${DEPTH_PRESET:-depthpro2-h}" \
         ${TFV6_ADDR:+--tfv6-addr "$TFV6_ADDR"}
 fi
 export HF_HOME="${HF_HOME:-$REPO_ROOT/third_party/hf_cache}"
 exec "$PERCEPTION_PY" "$REPO_ROOT/carla_probe/perception_server.py" --port "${PERCEPTION_PORT:-8795}" \
-    --device "${PERCEPTION_DEVICE:-cuda:0}" --segmenter "${SEGMENTER:-auto}"
+    --host "${PERCEPTION_HOST:-127.0.0.1}" --device "${PERCEPTION_DEVICE:-cuda:0}" --segmenter "${SEGMENTER:-auto}"
