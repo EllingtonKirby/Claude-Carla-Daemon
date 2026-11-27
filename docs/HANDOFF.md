@@ -123,6 +123,31 @@ client is stdlib-only.
 **Ports** per session: CARLA RPC `CARLA_PORT` (20000; CARLA also uses the next two ports),
 traffic manager `TM_PORT` (`CARLA_PORT`+20000) and the probe socket `PROBE_PORT` (8790).
 
+### 2.1 On the vai cluster (RTX 2080 Ti machines)
+
+Use a job built from `Dockerfile_b2d` (the vai repo's docker_build directory) on cougar, impala,
+jaguar, lada, mustang or panda: it carries CARLA 0.9.15 with Town11-15 at `/home/carla`, `uv` with
+CPython 3.10, `patch`, `ffmpeg` and the `claude` CLI. One GPU, 8 CPUs and 32 GB RAM per session.
+The data-center GPUs (A100/H100/H200/L40S) are untested: CARLA renders with Vulkan.
+
+**Run as uid 1000.** The image's user is uid 1020, but the NFS workspace belongs to uid 1000, which
+the image names `carla`; as 1020 the checkout is unreadable or read-only. So, inside the job:
+
+```bash
+sudo chmod 777 /home/carla && sudo chmod -R a+rwX /home/carla/CarlaUE4/Saved   # once per container
+R=<path to the checkout>
+sudo -u carla -H bash $R/scripts/vai_carla.sh bash scripts/setup_bench2drive.sh    # host may lack `patch`
+sudo -u carla -H bash $R/scripts/vai_carla.sh python -m pytest -q
+sudo -u carla -H bash $R/scripts/vai_carla.sh bash scripts/run_eval.sh 25378 sensors claude-opus-5
+```
+
+`vai_carla.sh` sets `CARLA_ROOT`, the uv interpreter dir, `SDL_VIDEODRIVER=dummy`, and a Claude
+Code login from the `claude setup-token` token in `~/no_backup/.claude_code_oauth_token`
+(`carla` cannot read the credential baked into the image), then sources `env.sh` and runs the
+command from the repo root. The `.venv` it builds links to `/opt/uv-python`, which exists only in
+that image: a venv built there does not run on other hosts, and vice versa (§2, dangling `.venv`).
+Launch runs detached (`vai_job_exec` with `detach`, or `setsid nohup` as in §4.2).
+
 ## 3. Validate an install
 
 Do this on every new machine, and after changing `agent.py`, `config.yaml` or the patch. It
