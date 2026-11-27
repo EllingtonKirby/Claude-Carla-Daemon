@@ -15,3 +15,4 @@ there. Not used by the daemon or the drivers.
 - `hornet_envrc` is the environment file (CARLA path, SDL_VIDEODRIVER=dummy, venv).
 - `HANDOFF.md` is the session-to-session handoff for these experiments: run state, user rules, results, next steps.
 - `b3s_after_a0plus.sh` waits for the A0+ lanes, starts the strong perception service and runs B3s+.
+- `TRAIN_EVAL_SPEC.md` is the spec for the train-then-evaluate experiment (B3s+T): agreed, not implemented.
