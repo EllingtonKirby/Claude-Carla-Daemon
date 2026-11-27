@@ -198,7 +198,14 @@ the background; this file has the current state and the open tasks.
 ## Order of runs (proposed 11-26)
 
 1. Thu night: B3s+L (perception library + guide rule), 10 routes. Done: see above.
-2. Fri night, after the weekly reset: B5 (TransFuser scene tool on top of B3s+L), 10 routes.
+2. Fri 11-27 night: B5 (TransFuser scene tool on top of B3s+L), 10 routes, SCHEDULED:
+   `~/workspace/b5_launch.sh "2026-11-27 17:55" 0.20` (running, waiting). Library frozen at the
+   current main in `~/workspace/frozen_libs/driver_lib_b5`. End to end checked without Claude usage
+   (TransFuser behind the perception service's /scene, called from lib inside code_runner).
+2b. Then B5c: B5 with AUTOCOMPACT=100k (the user's order, 11-27), after the B5 morning check:
+   `~/workspace/b5c_launch.sh "<start UTC>" <cap>`, job list `sessions/ladder_plus/jobs_b5c.txt`.
+   Why: no drive ever compacted (context grows to 300-430k under `auto`); replaying the drives with
+   compaction at 100k to a 30k summary roughly halves input tokens.
 3. Next: training routes with a working memory (not built yet): 10 training routes driven in
    sequence with a shared memory, then the 10 test routes with it frozen.
 4. Parked: teacher/student.
