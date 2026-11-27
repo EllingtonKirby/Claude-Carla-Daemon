@@ -185,6 +185,14 @@ the background; this file has the current state and the open tasks.
 - Wobble unchanged: steering reversals 56 per 10 s of straight cruising (B3s+ 47, A1 2.6); plan-to-plan
   path shift at 8 m median 20 cm (24), p90 74 cm (85).
 - One attempt per route; a ~11-point gap is at the edge of the noise.
+- Transcript dig (11-27): the cost rise is two long, failed drives, not the library. Median cost per
+  drive $12.4 (B3s+ $13.2); cost per decision flat (~$0.40-0.47). 2091 ran all 3,999 steps (61
+  decisions, $24.7: waited 500 ticks for a gap, then a full-lock manual turn into traffic) and 26405
+  took 56 decisions ($35.2: went the wrong side of a parked police car on the GPS offset). Cost is
+  re-reading the context every turn (17-23M cached input tokens per drive against ~75k generated), so
+  writing less code (a few thousand tokens) cannot move it; fewer turns per decision and smaller
+  contexts would. Drivers built one per-decision look.py (lanes + tracker + objects, ~25 runs per
+  drive) and zoomed more (11 zoom reads against 7 crops).
 - Weekly usage 0.88 at the last gate (00:24 UTC 11-27); the cap is 0.0 until the weekly reset.
 
 ## Order of runs (proposed 11-26)
