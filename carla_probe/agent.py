@@ -248,6 +248,11 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         # CAM_FRONT and CAM_BACK and gets the six ring cameras as views of its own (TFV6_1 front-left,
         # TFV6_3 front-right by default; the others on request). Each percept also writes the ring
         # stitched left to right as TFV6_rgb.jpg (JPEG quality 90, as LEAD's own agent does).
+        # EGO_STATE=1 (camera tracks): each percept also writes ego.json next to the images -- the ego's
+        # own sensor state at that tick (step, sim time, speed, IMU incl. gyro and compass, GNSS, the
+        # GNSS + compass pose estimate), the same fields `get_state` returns, so a driver's scripts can
+        # relate one look to the next (ego motion between frames). Sensors-eligible: nothing privileged.
+        self._ego_state_file = os.environ.get("EGO_STATE", "0") == "1"
         self._tfv6_cameras = TFV6_CAMERAS if os.environ.get("TFV6_CAMERAS", "0") == "1" else []
         if self._tfv6_cameras:
             self._cameras = [c for c in self._cameras if c["id"] in ("CAM_FRONT", "CAM_BACK")] + \
@@ -1093,6 +1098,14 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         imgs = [np.ascontiguousarray(self._last_input[c["id"]][1][:, :, :3]) for c in self._tfv6_cameras]
         cv2.imwrite(str(out_dir / "TFV6_rgb.jpg"), np.concatenate(imgs, axis=1), [cv2.IMWRITE_JPEG_QUALITY, 90])
 
+    def _write_ego_state(self, out_dir: Path) -> None:
+        st = self._sensor_state()
+        ego = {k: st[k] for k in ("step", "sim_time", "ego_status", "pose_estimate")}
+        ego["legend"] = ("ego sensors at this frame's tick (one tick = 0.05 s). imu_raw is CARLA's sensor frame: "
+                         "x forward, y RIGHT, z up; gyroscope z > 0 = turning RIGHT. pose_estimate is GNSS + compass "
+                         "in the CARLA world frame (left-handed, yaw clockwise), noisy (~0.5 m).")
+        (out_dir / "ego.json").write_text(json.dumps(ego, indent=1))
+
     def _start_dense_rig(self) -> None:
         """Spawn the GT depth + instance-seg clones (carla_probe/gt_dense.py). The hero is resolved
         here only to ATTACH sensors to it; nothing read off it reaches a reply. The clones deliver
@@ -1221,6 +1234,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             names += self._dense_rig.write(out_dir, cams or [c["id"] for c in self._cameras], self._frame)
         if self._tfv6_cameras:
             self._write_tfv6(out_dir)
+        if self._ego_state_file and self._sensors_only:
+            self._write_ego_state(out_dir)
         # The directory once, then bare filenames. Absolute paths repeated per camera cost ~115
         # tokens a reply and, on a track where nothing is evicted, are re-read on every later turn;
         # this is ~45. The driver joins dir + name, which its file reader needs anyway because its

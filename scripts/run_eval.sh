@@ -44,6 +44,8 @@
 #           driver.json; the prompt says it is there.
 #      PRIV_EXTRAS (0): 1 = privileged extras (OPERATOR_GUIDE §8e): actor behaviours, the scorer's rules,
 #           the route's scenarios, predict / plan_check. Privileged track only.
+#      EGO_STATE (0): 1 = on a camera track, each percept also writes ego.json next to the images (the
+#           ego's own sensor state at that tick: speed, IMU incl. gyro and compass, GNSS, pose estimate)
 #      TFV6 (0): 1 = TransFuser v6 perception (B5): the agent swaps CAM_FRONT_LEFT/RIGHT for TransFuser's
 #           6-camera ring (TFV6_CAMERAS=1) and the driver's lib/scene.py reads its boxes and map through
 #           the perception service (which must run with --tfv6-addr). Needs PERCEPTION_ADDR.
@@ -76,6 +78,9 @@ fi
 [ -z "$CODE_LIB" ] || [ -d "$CODE_LIB" ] || { echo "ERROR: CODE_LIB=$CODE_LIB is not a directory" >&2; exit 1; }
 : "${PRIV_EXTRAS:=0}"
 [ "$PRIV_EXTRAS" = 0 ] || [ "$TRACK" = privileged ] || { echo "ERROR: PRIV_EXTRAS=1 needs the privileged track" >&2; exit 1; }
+: "${EGO_STATE:=0}"
+[ "$EGO_STATE" = 0 ] || [ "$TRACK" != privileged ] || { echo "ERROR: EGO_STATE=1 is for the camera tracks (sensors, dense)" >&2; exit 1; }
+export EGO_STATE
 : "${TFV6:=0}"
 [ "$TFV6" = 0 ] || [ -n "$PERCEPTION_ADDR" ] || { echo "ERROR: TFV6=1 needs PERCEPTION_ADDR (a perception service with --tfv6-addr)" >&2; exit 1; }
 if [ "$TFV6" = 1 ]; then
@@ -310,6 +315,12 @@ EOF
 A perception library is already installed at ${LIB_README%/README.md}: read its README.md before driving.
 EOF
     fi
+    if [ "$EGO_STATE" = 1 ]; then
+        cat >> "$DRIVER_WS/prompt.txt" <<EOF
+Each percept's frames directory also holds ego.json: your car's own sensor state at that tick (step,
+sim time, speed, IMU with gyro and compass, GNSS, a GNSS + compass pose estimate).
+EOF
+    fi
     if [ "$TFV6" = 1 ]; then
         cat >> "$DRIVER_WS/prompt.txt" <<EOF
 This session also runs TransFuser v6 perception: lib/scene.py (see the README) gives road users as
@@ -395,7 +406,7 @@ fi
 cat > "$SESSION_DIR/driver.json" <<EOF
 {"model": "$MODEL", $CLAUDE_META"benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
  "driver": "$DRIVER", "vla": "${VLA:-off}",
- "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "info_extras": "$INFO_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "pid_launch_throttle": "${PID_LAUNCH_THROTTLE:-config}", "pid_preset": "${PID_PRESET:-none}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB", "tfv6": "$TFV6",
+ "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "info_extras": "$INFO_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "pid_launch_throttle": "${PID_LAUNCH_THROTTLE:-config}", "pid_preset": "${PID_PRESET:-none}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB", "tfv6": "$TFV6", "ego_state": "$EGO_STATE",
  "code_lib_sha256": "$([ -n "$CODE_LIB" ] && (cd "$CODE_LIB" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1))",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
  "driver_ws": "$DRIVER_WS", "started": "$(date -Iseconds)"}
