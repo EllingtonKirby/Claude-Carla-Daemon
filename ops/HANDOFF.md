@@ -172,9 +172,24 @@ the background; this file has the current state and the open tasks.
 - B3s+L uses a library frozen at the PR #4 merge (`~/workspace/frozen_libs/driver_lib_b3sL`, no
   `scene` module), so it is the condition that was agreed even though `main` now has scene.py.
 
+## B3s+L results (Thursday 11-26 night, run 22:33 to 02:08 Paris; all 10 valid)
+
+- Mean DS 70.6 (B3s+ 81.9, B2+ 81.6). Per route: 17569 60, 2091 11.1 (ran out of time, RC 47),
+  25378 70, 25381 100, 25424 68.9, 26405 30.5, 27494 70, 28198 95.2, 3255 100, 3514 100.
+  Vehicle collisions 5 in 10 drives (B3s+ 2): 2091 x2, 26405 x2, 17569 x1; red light 27494; ambulance 25378.
+- Tokens did NOT go down: API-equivalent $16.7 per drive (B3s+ $13.2, B2+ $12.8), thinking 77k (71k),
+  wall 34 min (30). Drivers wrote much less code (105 lines per drive against 280) but ran more scripts
+  (54 against 46) and opened more images (56 against 44).
+- Library use: every driver read lib/README.md and used objects, lanes and zoom; only one (26405) used
+  LaneTracker.
+- Wobble unchanged: steering reversals 56 per 10 s of straight cruising (B3s+ 47, A1 2.6); plan-to-plan
+  path shift at 8 m median 20 cm (24), p90 74 cm (85).
+- One attempt per route; a ~11-point gap is at the edge of the noise.
+- Weekly usage 0.88 at the last gate (00:24 UTC 11-27); the cap is 0.0 until the weekly reset.
+
 ## Order of runs (proposed 11-26)
 
-1. Thu night: B3s+L (perception library + guide rule), 10 routes.
+1. Thu night: B3s+L (perception library + guide rule), 10 routes. Done: see above.
 2. Fri night, after the weekly reset: B5 (TransFuser scene tool on top of B3s+L), 10 routes.
 3. Next: training routes with a working memory (not built yet): 10 training routes driven in
    sequence with a shared memory, then the 10 test routes with it frozen.
