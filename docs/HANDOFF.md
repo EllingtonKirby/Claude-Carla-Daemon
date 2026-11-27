@@ -381,6 +381,46 @@ Keep `VLA`, `INFO_EXTRAS`, and `TFV6` off for these runs. The library in the cur
 also supports the separate B5 arm, which uses TransFuser perception. Report differences in
 the source commits, Codex and Claude Code tool interfaces, and reference coverage.
 
+### 4.6 Preparing the full Bench2Drive B3s+L run on another host
+
+Use the updated Codex harness with calibration and private image output support. The B3s+L
+configuration uses `gpt-6.2-sol` with its default reasoning effort, the `sensors` track,
+`PID_PRESET=plus`, `CODE_TOOL=on`, and `TM_SEED=0`. Keep `VLA=off`, `TFV6=0`,
+`INFO_EXTRAS=0`, and `PRIV_EXTRAS=0`. Leave leaderboard budget overrides unset and isolation
+enabled. The experiment uses the historical perception library without an object motion tracker.
+
+Restore the exact B3s+L library from Git. Use a fresh path outside the driver workspace.
+
+```bash
+frozen_library="$(mktemp -d)"
+git archive e5772610fb81f767b36b1d7836de91261f4d7b1f carla_probe/driver_lib \
+  | tar -x --strip-components=2 -C "$frozen_library"
+(cd "$frozen_library" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum)
+```
+
+The digest should be `47d1c758aa3f780a647a184b0f28a517bf5fb9392f90023bfcae4856977029a7`.
+Install the strong backend with `scripts/setup_perception2.sh`. The perception server's account
+needs access to the gated `facebook/sam3` model. Give the server a readable `HF_TOKEN_PATH` for
+an authorized credential or log in as its user. With `HF_HUB_OFFLINE` unset, prefetch
+`config.json` and `sam3.pt` into the `HF_HOME` the server will use. Set `HF_HUB_OFFLINE=1` only
+after both files are cached. Start `scripts/run_perception_server.sh` with `BACKEND=strong` and
+verify that `/health` reports `apple/depthpro2-h` and `facebook/sam3`. Credentials belong to the
+server process. The evaluated driver uses the local perception endpoint.
+
+Generate the route manifest from the pinned `third_party/Bench2Drive/leaderboard/data/bench2drive220.xml`.
+Check all 220 unique route IDs against their split files and confirm the required maps are
+installed. Record the source commit, document and library hashes, and one scheduled attempt per
+route. Keep the manifest and all results under `sessions/` or outside the repo. Keep official
+partial scores for driving failures. Save and retry infrastructure failures separately.
+
+For a multi-GPU run, assign each worker its own `GPU_RANK` and unused ports. Space CARLA RPC
+ports by at least 10, and give each traffic manager and probe a unique port. The existing
+`ops/lanes*.sh` scripts use Hornet's paths and quota logic and pin CARLA to GPU 0. Validate two
+concurrent workers, including one on a nonzero GPU, before filling the machine. The strong
+perception service serializes inference per process. Check latency and GPU memory before
+sharing one service across workers. Keep the queue resumable and stop launching new drives
+when account quota or a shared service is unavailable.
+
 ## 5. Recording and analysis
 
 ### 5.1 What a run records
