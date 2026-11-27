@@ -45,6 +45,33 @@ def test_driver_confines_code_paths_and_preflight_commands(tmp_path):
     assert driver.call("read", {"path": "drive.py"})[0]["text"] == "print('ready')"
 
 
+def test_driver_reads_generated_images_and_probe_camera_model(tmp_path):
+    code = tmp_path / "code"
+    code.mkdir()
+    crop = code / "crop.png"
+    crop.write_bytes(b"image data")
+    private = tmp_path / "private.jpg"
+    private.write_bytes(b"private data")
+    (code / "outside.jpg").symlink_to(private)
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    calibration = frames / "cameras.json"
+    calibration.write_text('{"cameras":{}}')
+
+    driver = DriverTools(tmp_path, "", code, "")
+    for path in (crop.name, str(crop)):
+        assert driver.call("read", {"path": path})[0]["mimeType"] == "image/png"
+    for path in ("outside.jpg", str(private), str(calibration)):
+        with pytest.raises(PermissionError):
+            driver.call("read", {"path": path})
+    driver.remember({"camera_model": str(calibration)})
+    assert driver.call("read", {"path": str(calibration)})[0]["text"] == '{"cameras":{}}'
+
+    reader = DriverTools(tmp_path, "", None, "")
+    with pytest.raises(PermissionError):
+        reader.call("read", {"path": str(crop)})
+
+
 def test_preflight_requires_carla_tool_evidence(tmp_path):
     def event(tool, args, reply):
         return {"type": "item.completed", "item": {

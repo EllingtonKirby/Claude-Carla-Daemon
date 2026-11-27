@@ -78,7 +78,7 @@ class ProbeClient:
         self._sock.sendall((json.dumps({"cmd": cmd, **kwargs}) + "\n").encode())
         line = self._rfile.readline()
         if not line:
-            raise ConnectionError("daemon closed the connection (route ended or agent crashed)")
+            raise ConnectionError("daemon closed the connection without a reply; the route outcome is unknown")
         return json.loads(line)
 
     def close(self) -> None:

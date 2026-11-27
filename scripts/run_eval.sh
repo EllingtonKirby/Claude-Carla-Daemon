@@ -219,8 +219,8 @@ Before your first command, read driving_loop (skip its section 1 "Launch": the s
 up; also skip the summarize step in section 4), then driving_guide and protocol with carla.read, and
 follow them. Map shell and file-reading examples in those documents to the carla tools.
 
-Drive the route to the end. Stop when an advance returns route_end or the client reports that
-the daemon closed the connection. Then reply with a short account of the drive.
+Drive the route until an advance returns route_end. If the daemon closes the connection without a
+reply, stop and report an unknown outcome. Then reply with a short account of the drive.
 EOF
 else
 cat > "$DRIVER_WS/prompt.txt" <<EOF
@@ -236,8 +236,8 @@ Before your first command, read $REPO_ROOT/.claude/skills/drive-carla/SKILL.md (
 section 1 "Launch": the session is already up; also skip the summarize step in section 4), then
 $REPO_ROOT/docs/OPERATOR_GUIDE.md and $REPO_ROOT/benchmark/PROTOCOL.md, and follow them.
 
-Drive the route to the end. Stop when an advance returns route_end or the client reports that
-the daemon closed the connection. Then reply with a short account of the drive.
+Drive the route until an advance returns route_end. If the daemon closes the connection without a
+reply, stop and report an unknown outcome. Then reply with a short account of the drive.
 EOF
 fi
 if [ "${DEBRIEF:-prompt}" != 0 ]; then
@@ -285,6 +285,7 @@ This session has the code tool (driving_guide §8b). Write Python files with car
 and execute them with carla.run_script, using paths relative to your private code directory.
 A script may read the frames a percept returns and the camera model at <frames_dir>/../cameras.json.
 Use it for anything measurable: distances, gaps, clearances.
+Open script-generated PNG and JPEG files in your private code directory with carla.read.
 EOF
     else
         cat >> "$DRIVER_WS/prompt.txt" <<EOF

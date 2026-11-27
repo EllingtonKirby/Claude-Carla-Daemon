@@ -21,7 +21,7 @@ DOCS = {
     "driving_guide": REPO / "docs/OPERATOR_GUIDE.md",
     "protocol": REPO / "benchmark/PROTOCOL.md",
 }
-IMAGE_TYPES = {".jpg": "image/jpeg", ".png": "image/png"}
+IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
 TEXT = {"type": "string"}
 ARRAY = {"type": "array", "items": TEXT}
 
@@ -48,7 +48,9 @@ class DriverTools:
                  {"command": TEXT, "arguments": {"type": "object", "additionalProperties": True}},
                  ["command"]),
             tool("read", "Read driving_loop, driving_guide, protocol, or an artifact path returned "
-                 "by the probe. Joins of frames_dir and the returned filenames are valid.",
+                 "by the probe. Joins of frames_dir and the returned filenames are valid. "
+                 + ("You can also open PNG and JPEG outputs in your private code directory."
+                    if self.code else ""),
                  {"path": TEXT}, ["path"]),
         ]
         if self.code:
@@ -65,8 +67,9 @@ class DriverTools:
         paths = []
         if "frames_dir" in reply:
             paths.extend(Path(reply["frames_dir"]) / name for name in reply.get("files", []))
-        if "file" in reply:
-            paths.append(Path(reply["file"]))
+        for field in ("file", "camera_model"):
+            if field in reply:
+                paths.append(Path(reply[field]))
         if "dump" in reply:
             dump = reply["dump"]
             paths.extend(Path(p) for p in [dump["state"], dump["bev"], *dump["cameras"]])
@@ -100,14 +103,20 @@ class DriverTools:
             path = args["path"]
             if path in DOCS:
                 return content(DOCS[path].read_text())
-            if self.code and not Path(path).is_absolute():
-                resolved = self.code_path(path)
-                if resolved.suffix in {".py", ".md"} and resolved.is_file():
+            requested = Path(path)
+            if self.code and not requested.is_absolute():
+                resolved = self.code_path(requested)
+            else:
+                resolved = requested.resolve()
+            mime = IMAGE_TYPES.get(resolved.suffix.lower())
+            in_code = self.code is not None and self.code in resolved.parents
+            if in_code:
+                if resolved.suffix in {".py", ".md"}:
                     return content(resolved.read_text())
-            resolved = Path(path).resolve()
-            if self.frames not in resolved.parents or resolved not in self.artifacts:
+                if not mime:
+                    raise PermissionError("only scripts, Markdown, and images may be read from the code directory")
+            elif self.frames not in resolved.parents or resolved not in self.artifacts:
                 raise PermissionError("only driver documents and returned artifacts may be read")
-            mime = IMAGE_TYPES.get(resolved.suffix)
             if mime:
                 return [{"type": "image", "mimeType": mime,
                          "data": base64.b64encode(resolved.read_bytes()).decode("ascii")}]

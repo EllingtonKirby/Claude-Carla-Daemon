@@ -595,6 +595,10 @@ def test_sensors_session(make_session):
         assert payload["ok"] and payload["observe"].keys() == obs.keys()
         assert payload["files"] == [
             "CAM_FRONT.jpg", "CAM_FRONT_LEFT.jpg", "CAM_FRONT_RIGHT.jpg", "CAM_BACK.jpg"]
+        assert Path(payload["camera_model"]) == Path(payload["frames_dir"]).parent / "cameras.json"
+        intrinsics = json.loads(Path(payload["camera_model"]).read_text())["cameras"]["CAM_FRONT"]["intrinsics"]
+        assert set(intrinsics) == {"jpg"}
+        assert intrinsics["jpg"]["fx"] > 0
         leaked = [k for k in _keys(payload) if any(k.startswith(w) for w in _PRIVILEGED_WORDS)]
         assert not leaked, leaked
 

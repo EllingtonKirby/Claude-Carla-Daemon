@@ -335,7 +335,8 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
         # The camera model a script needs to turn pixels into metres. The agent's own declared rig, so
         # Bench2Drive-eligible on every track; it sits in frames/, the one place a driver may read.
         (self._out / "frames").mkdir(parents=True, exist_ok=True)
-        (self._out / "frames" / "cameras.json").write_text(json.dumps(camera_model(
+        self._camera_model_path = (self._out / "frames" / "cameras.json").resolve()
+        self._camera_model_path.write_text(json.dumps(camera_model(
             self._cameras, self._percept_scale, self._gt_dense_scale if self._want_gt_dense else 0.0,
             self._full_res_frames), indent=1))
         print(f"[PROBE] session ready (access={self._access}): the sim pauses on the first tick until a "
@@ -1228,6 +1229,7 @@ class ProbeAgent(autonomous_agent.AutonomousAgent):
             "observe": self._sensor_observe() if self._sensors_only else self._observe(k),
             "frames_dir": str(out_dir.resolve()),
             "files": names,
+            "camera_model": str(self._camera_model_path),
         }
         # Looking IS the moment a clearance belief is formed, so answering it here costs no extra
         # round trip. Same builder, same access guarantees; it reads only driver-supplied points.

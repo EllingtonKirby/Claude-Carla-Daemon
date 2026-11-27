@@ -244,13 +244,15 @@ outlive the burst.
   the estimate has moved by more than ~0.3 m, or has stayed off by the same amount for two looks in a
   row, and spread a correction over distance: roughly 15 m of travel per 0.5 m of shift. §7's "put
   the points where the car should be" still holds; this is about not chasing noise while doing it.
-- **Distances from images.** The JPGs may be written at a reduced resolution, so work from the image
-  you actually opened rather than from a fixed pixel count. `CAM_FRONT` has a 110° horizontal FOV,
-  which makes its focal length ≈ 0.35 × the image width W in pixels. An object of real height H
-  metres spanning h pixels is then ≈ 0.35·W·H/h metres away. A car is about 1.5 m tall and 1.8 m
-  wide, and a lane about 3.5 m wide.
-- **Closing speed** comes from the change in distance between two frames a known number of ticks
-  apart. Compare frames before committing to a gap.
+- **Distances from images.** Open the `camera_model` path returned by `percept` for the camera mounts
+  and intrinsics at each output resolution. Match the camera and image type you opened, such as
+  `jpg` for `CAM_FRONT.jpg` or `full_jpg` for `CAM_FRONT_full.jpg`. With focal length `fy` in pixels,
+  an object of assumed height H metres spanning h pixels is approximately `fy*H/h` metres away
+  along the optical axis. Treat the range as an estimate, especially when the object is partly visible.
+- **Closing speed** comes from the change in estimated distance to the same object divided by the
+  change in `status.sim_time`. To estimate its movement relative to the road, account for your own
+  translation and heading change using the sensor pose estimate. Treat uncertain associations as
+  unknown and take another look before committing to a gap.
 - **Route points are approximate.** The plan is sparse, so the polyline between route waypoints
   cuts corners, and the pose estimate carries ~0.5 m GNSS noise. Use `nav.route_points_ego` and
   `next_command` for *where* to go, and the visible lane for *exactly where* to drive — which is
@@ -499,7 +501,10 @@ as good as your estimates: a car you have not seen, or put in the wrong place, i
 - Deliberation is free; the tick budget is not. Don't creep for no reason. On an empty straight
   road take *longer bursts* rather than fewer looks — with `percept=true` the look is already in
   the reply, so the thing to economise is ticks per decision, never decisions per route.
-- On route end the advance returns reason `route_end`; `result.json` holds the official scores.
+- An advance returning `route_end` means the evaluator stopped the drive. Navigation progress can
+  reach 100% before that reply, and a connection closed without a reply leaves the outcome unknown.
+  After the session, the operator gets official completion, penalty and driving score from
+  `result.json`.
 
 ## 11. Artifacts
 
