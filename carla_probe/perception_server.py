@@ -28,6 +28,7 @@ GET  /health                                -> {"ok", "depth_model", "segment_mo
 from __future__ import annotations
 
 import argparse
+import contextlib
 import base64
 import io
 import json
@@ -160,7 +161,8 @@ class StrongModels:
     does: frames/cameras.json); otherwise Depth Pro 2 estimates it from the image.
     """
 
-    def __init__(self, device: str, depth_preset: str = "depthpro2-h", sam_threshold: float = 0.5) -> None:
+    def __init__(self, device: str, depth_preset: str = "depthpro2-h", sam_threshold: float = 0.5,
+                 segment_device: Optional[str] = None) -> None:
         from depth_pro_2 import create_model_and_transforms
         from sam3.model.sam3_image_processor import Sam3Processor
         from sam3.model_builder import build_sam3_image_model
@@ -168,11 +170,20 @@ class StrongModels:
         self.lock = threading.Lock()
         self.dp, self.dp_transform = create_model_and_transforms(depth_preset, device=device)
         self.dp.eval()
-        self.sam = build_sam3_image_model(device="cpu").to(device).eval()   # its builder moves only for device == "cuda"
-        self.sam_proc = Sam3Processor(self.sam, device=device, confidence_threshold=sam_threshold)
+        # SAM 3 may sit on its own GPU: both models need ~11 GB together without Flash Attention (pre-Ampere)
+        sd = self.segment_device = segment_device or device
+        # SAM 3 precomputes caches on the default "cuda" device while building, and creates more per call:
+        # make its own GPU the default for both (segment() does the same)
+        with self._sam_device():
+            self.sam = build_sam3_image_model(device="cpu").to(sd).eval()   # its builder moves only for device == "cuda"
+            self.sam_proc = Sam3Processor(self.sam, device=sd, confidence_threshold=sam_threshold)
         self.depth_model_name = f"apple/{depth_preset}"
         self.segment_model_name = "facebook/sam3"
         self.open_vocab = True
+
+    def _sam_device(self):
+        sd = self.segment_device
+        return torch.cuda.device(sd) if sd.startswith("cuda") else contextlib.nullcontext()
 
     @torch.inference_mode()
     def depth(self, rgb: np.ndarray, f_px: Optional[float] = None) -> np.ndarray:
@@ -187,7 +198,7 @@ class StrongModels:
         h, w = rgb.shape[:2]
         labels = np.zeros((h, w), dtype=np.int32)
         segs: List[Dict[str, Any]] = []
-        with self.lock, torch.autocast("cuda", dtype=torch.bfloat16):
+        with self.lock, self._sam_device(), torch.autocast("cuda", dtype=torch.bfloat16):
             state = self.sam_proc.set_image(Image.fromarray(rgb))   # encode once, prompt many times
             for prompt in prompts or VEHICLE_PROMPTS:
                 self.sam_proc.reset_all_prompts(state)
@@ -269,6 +280,7 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8795)
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--segment-device", default="", help="strong backend only: SAM 3's device (default: --device)")
     ap.add_argument("--backend", default="legacy", choices=["legacy", "strong"],
                     help="legacy = Depth Anything V2 + Mask2Former/SAM 3 (transformers); strong = Depth Pro 2 + SAM 3")
     ap.add_argument("--segmenter", default="auto", choices=["auto", "sam3", "panoptic"], help="legacy backend only")
@@ -277,7 +289,7 @@ def main() -> None:
     a = ap.parse_args()
     global TFV6_ADDR
     TFV6_ADDR = a.tfv6_addr
-    models = StrongModels(a.device, a.depth_preset) if a.backend == "strong" else Models(a.device, a.segmenter)
+    models = StrongModels(a.device, a.depth_preset, segment_device=a.segment_device or None) if a.backend == "strong" else Models(a.device, a.segmenter)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(models))
     print(f"[perception] serving on {a.host}:{a.port} depth={models.depth_model_name} segment={models.segment_model_name}", flush=True)
     srv.serve_forever()
