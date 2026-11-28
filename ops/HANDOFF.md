@@ -215,7 +215,7 @@ the background; this file has the current state and the open tasks.
 
 - B3s+ (no library) with EGO_STATE=1 and the current guide (which now has the lane-noise rule, unlike
   the original B3s+). Mean DS 71.7 (B3s+ 81.9, B3s+L 70.6, B5 90.7). Per route: 17569 100, 2091 100
-  (first camera arm to pass the unprotected left turn cleanly), 25378 70 (ambulance), 25381 100,
+  (passed the unprotected left turn cleanly; among camera arms only B2+ had), 25378 70 (ambulance), 25381 100,
   25424 17.9 (four roadside collisions in the construction zone), 26405 31.8 (ran out of time at 32%
   of the route), 27494 45.5 (roadside collision + red light), 28198 52.1 (vehicle collision + outside
   lanes), 3255 100, 3514 100.
