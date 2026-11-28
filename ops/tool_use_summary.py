@@ -15,6 +15,7 @@ ARMS = [
     ("B3s+", f"{H}/ccd_priv2/sessions/ladder_plus/B3s_strong_perc/a1/route_*"),
     ("B3s+L", f"{H}/ccd_priv2/sessions/ladder_plus/B3s_guide_lib/a1/route_*"),
     ("B5", f"{H}/ccd_priv2/sessions/ladder_plus/B5_tfv6/a1/route_*"),
+    ("B3s+E", f"{H}/ccd_priv2/sessions/ladder_plus/B3s_ego/a1/route_*"),
 ]
 CAM = re.compile(r"(CAM_[A-Z_]+?)(?:_full)?(?:_depth|_inst)?\.(?:jpg|png|npy)")
 CLIENT = re.compile(r"carla_probe\.client\s+(\w+)")

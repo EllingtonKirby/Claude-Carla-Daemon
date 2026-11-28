@@ -211,6 +211,27 @@ the background; this file has the current state and the open tasks.
   rerun scored 100. Weekly usage 0.08 at the last gate (22:41 Paris); cap 0.0 now.
 - One attempt per route.
 
+## B3s+E results (Saturday 11-28, daytime, the user's OK; 09:56 to 15:01 Paris; all 10 valid)
+
+- B3s+ (no library) with EGO_STATE=1 and the current guide (which now has the lane-noise rule, unlike
+  the original B3s+). Mean DS 71.7 (B3s+ 81.9, B3s+L 70.6, B5 90.7). Per route: 17569 100, 2091 100
+  (first camera arm to pass the unprotected left turn cleanly), 25378 70 (ambulance), 25381 100,
+  25424 17.9 (four roadside collisions in the construction zone), 26405 31.8 (ran out of time at 32%
+  of the route), 27494 45.5 (roadside collision + red light), 28198 52.1 (vehicle collision + outside
+  lanes), 3255 100, 3514 100.
+- Cost $14.2 per drive mean, $12.8 median, $0.49 per decision; thinking 76k; images 46; 34 min.
+  Plans were longer: 31 ticks each (B3s+ 20).
+- ego.json: read or used in only 3 of 10 drives (27494 in a script, 28198 read 10 times, 3514 twice).
+  Where used, it did the intended cross-frame job: 28198 differenced pose_estimate between two looks,
+  re-projected a tracked car and got its velocity and a 1.8 m closest approach, and stopped; 27494
+  converted detections to world coordinates to tell moving from stopped cars. 27494 asked for it in
+  the guide: "difference pose_estimate yaw/x/y between percepts before calling anything stationary".
+- Wobble unchanged: 50 steering reversals per 10 s; plan-to-plan shift median 21 cm (p90 59).
+- Infra: 25378 and 25381 lost their CARLA servers; both quarantined and rerun (the 25381 requeue was
+  missed by the lanes, so it was rerun by relaunching b3se_launch.sh at 14:34 Paris; it scored 100).
+  Weekly usage 0.20 at the last gate (14:34 Paris); cap 0.0 now.
+- One attempt per route.
+
 ## Order of runs (proposed 11-26)
 
 1. Thu night: B3s+L (perception library + guide rule), 10 routes. Done: see above.
