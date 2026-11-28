@@ -1,8 +1,8 @@
-# Handoff: set up, validate, run and record an eval
+# Operator handoff
 
 This is the one document to read before operating this repo. It covers what the repo is for (§1),
-setup (§2), validating an install (§3), running an eval (§4), what a run records and how to
-analyze it (§5), and troubleshooting (§6). Deeper references: `docs/OPERATOR_GUIDE.md` (the
+setup (§2), validating an install (§3), running an eval and choosing first experiments (§4),
+what a run records and how to analyze it (§5), and troubleshooting (§6). Deeper references: `docs/OPERATOR_GUIDE.md` (the
 driver's manual), `docs/DESIGN.md` (internals), `benchmark/PROTOCOL.md` (benchmark rules) and
 `docs/JOURNAL.md` (what we have measured so far, and the measurement lessons from it — read §1
 before designing an experiment, and add to it after running one).
@@ -16,7 +16,8 @@ drivers can read it. Keep run results in `sessions/` (gitignored) or outside the
 
 ## 1. What this repo is for
 
-It measures how well an LLM drives a car in closed loop, scored by an unmodified driving benchmark.
+It measures how well a coding agent drives a car in closed loop using the leaderboard's
+standard scoring rules.
 
 - **Simulator and scoring.** [CARLA](https://carla.org) 0.9.15 runs one route: a fixed path through
   a town with traffic and one scripted scenario. The leaderboard scores the drive: **DS**
@@ -30,21 +31,23 @@ It measures how well an LLM drives a car in closed loop, scored by an unmodified
     in Town13, on **its own** CARLA build with 30 novel assets. Each `Generalization_*` route is a
     shifted version of an in-distribution `Base_*` reference, and the headline number is the
     **drop** between them, not either absolute score.
-- **The daemon.** `carla_probe/agent.py` is the leaderboard's agent. The leaderboard steps CARLA
-  synchronously at 20 Hz and calls the agent every tick, and the agent blocks on a TCP socket until
-  it gets a command. So the world is **frozen while the driver thinks**, and time advances only
-  through the driver's commands (mainly `apply_plan`: ego-frame waypoints tracked by a PID
-  controller for N ticks). A route has a 4000-tick (200 s) budget.
+- **The launch path.** `scripts/run_session.sh` resolves one route and writes a config snapshot,
+  starts CARLA off-screen, and launches the selected leaderboard evaluator with
+  `carla_probe/agent.py` as its agent. The leaderboard steps CARLA synchronously at 20 Hz. The
+  probe blocks between commands on a TCP socket, so the world is **frozen while the driver thinks**.
+  `apply_plan` advances a bounded number of ticks while a PID controller follows ego-frame
+  waypoints. Bench2Drive caps a route at 4000 ticks (200 simulated seconds). Fail2Drive uses its
+  own stock timeout.
 - **The driver** talks to the daemon with `python -m carla_probe.client CMD key=value ...`
-  (one JSON reply per command). No learned policy is involved: every control decision is the
-  driver's.
-- **Two tracks**, enforced by the daemon and never averaged together:
+  (one JSON reply per command). The default driver chooses each plan. The optional `VLA=on`
+  configuration gives it a learned policy as another driving command.
+- **Three tracks**, enforced by the daemon and reported separately:
   - `sensors`: only inputs a Bench2Drive SENSORS-track agent gets (cameras, speedometer, IMU,
     GNSS, the sparse route plan). The main benchmark.
   - `privileged`: the ground-truth scene (actors, lanes, lights, signs, live score). Useful for
     development and as an upper bound; comparable only to privileged/expert agents.
-
-  A result is therefore a (benchmark, track) pair -- four buckets, none averaged with another.
+  - `dense`: the sensors view with ground-truth depth and instance segmentation. Use it to
+    measure what pixel-level ground truth contributes.
 - **Route sets** (`benchmark/routes/`). Bench2Drive: `smoke.txt` (install check, not a benchmark),
   `standard.txt` (the pinned single-route benchmark), `dev10.txt` (a broader 10-route set); ids map
   to `routes/bench2drive220/route_<id>.xml`. Fail2Drive: `f2d_pair.txt` (2), `f2d_smoke.txt` (8)
@@ -210,8 +213,8 @@ daemon answers -- much longer than Town03. Raise `--wait` rather than assuming a
 - One fresh session per route, one attempt; crashed or aborted runs count as failures (DS 0).
 - Every driving command carries `why="..."`, which the daemon enforces and logs. Justifications are
   reviewed as part of the result (§5.3).
-- Fixed settings: `TM_SEED=0`, default `carla_probe/config.yaml` except `access`, `AGENT_MAX_TICKS`
-  unset. Report any deviation.
+- Fixed settings use `TM_SEED=0`, default `carla_probe/config.yaml` except `access`, and stock
+  route budgets. Leave the time-limit overrides listed in the protocol unset and report deviations.
 - **How runs are paid for.** The driver is `claude -p`, so a run is billed to whatever the `claude`
   CLI is logged in to, normally a Claude subscription. A subscription-backed run's
   `total_cost_usd` is then an API-equivalent figure computed at list price, not a bill: what binds
@@ -219,15 +222,16 @@ daemon answers -- much longer than Town03. Raise `--wait` rather than assuming a
 - The driver uses only the probe protocol: no route XMLs, scenario or simulator code, logs, config
   edits or human hints. On the sensors track it may open only files whose paths the daemon returns.
 - Traffic is seeded but not bit-exact, and it reacts to the ego: run several attempts per route
-  when comparing models. Measured on the sensors dev set, the median per-route spread over three
-  attempts at one commit is **27 DS points**, so a one-attempt-each-way per-route delta is not a
+  when comparing models, with the count fixed before launching. On the sensors dev set, the
+  median per-route spread over three attempts at one commit was **27 DS points**, so a
+  one-attempt-each-way per-route delta is not a
   result — `docs/JOURNAL.md` §1.1 has the numbers and what they imply for experiment design.
 
 ### 4.2 Procedure: `scripts/run_eval.sh`
 
 ```bash
 source scripts/env.sh
-bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged> <MODEL> > /tmp/eval_<ROUTE_ID>.out 2>&1 &
+bash scripts/run_eval.sh <ROUTE_ID> <sensors|privileged|dense> <MODEL> > /tmp/eval_<ROUTE_ID>.out 2>&1 &
 # e.g.  bash scripts/run_eval.sh 2091 sensors claude-opus-5 > /tmp/eval_2091.out 2>&1 &
 ```
 
@@ -240,8 +244,8 @@ rule 2). Env overrides: `GPU_RANK`, `CARLA_PORT`,
 `PROBE_PORT` (for parallel runs), `SIM_RECORD`, `RECORD_CAMERA_EVERY` (§5.1), `LOAD_TIMEOUT_S`,
 `AUTOCOMPACT`, `ISOLATION_CHECK=0`, `CHECK_MODEL`, `VLA=on` (the learned policy; needs
 `scripts/run_vla_server.sh` running, and appends one sentence to the driver prompt),
-`DRIVER=baseline_vla | baseline_route` (no LLM: the policy told nothing, or the blind
-route-follower; MODEL is then a label). What it does:
+`DRIVER=codex` (see §4.5), `DRIVER=baseline_vla | baseline_route` (no LLM: the policy told
+nothing, or the blind route-follower; MODEL is then a label). What it does:
 
 1. Launches `scripts/run_session.sh` into a fresh `sessions/<stamp>_route_<id>_<track>/` and waits
    until the route is loaded and paused, checking the reported `access`.
@@ -251,7 +255,7 @@ route-follower; MODEL is then a label). What it does:
    agent failure) and records `driver_stopped_before_route_end` in `driver.json`. Then it waits
    for scoring and prints the summary.
 
-**What reaches the driver** is `prompt.txt`, the three documents it names, and whatever the daemon
+**What reaches the Claude Code driver** is `prompt.txt`, the three documents it names, and whatever the daemon
 returns — nothing else. `--setting-sources ""` is what keeps it that way: it blocks CLAUDE.md and
 memory loading, from the driver's own working directory and from `~/.claude` alike (verified: with
 the flag a CLAUDE.md in the working directory is ignored, without it its contents reach the driver).
@@ -279,9 +283,143 @@ Notes:
 - **Parallel runs:** one GPU per session (`GPU_RANK`), with distinct `CARLA_PORT` (stride ≥ 10),
   `PROBE_PORT` and session dirs. Throughput is dominated by camera rendering, so a second session
   on the same GPU slows both.
-- **Interactive (non-benchmark) use:** open Claude Code in the repo and ask it to drive a route. The
-  `drive-carla` skill launches the session itself. That driver is *not* isolated, so don't count
-  such runs as benchmark results.
+
+### 4.3 First experiments
+
+1. **Validate the installation.** Run the offline suite (§2), then the privileged and sensors
+   smoke checks (§3.1–3.2) on Bench2Drive route `25378`. Check that the session reaches step 0
+   with the requested access, observations return usable images, `apply_plan` advances simulation
+   time, and the evaluator writes `result.json` and exits.
+2. **Establish a route-following baseline and check the scored launcher.** On the same commit
+   and simulator install, run these sequentially on Bench2Drive route `2091`. Replace the model
+   string with an exact model ID available to the authenticated Claude Code CLI.
+
+   ```bash
+   DRIVER=baseline_route bash scripts/run_eval.sh 2091 sensors route-follower
+   bash scripts/run_eval.sh 2091 sensors '<claude-model-id>'
+   ```
+
+   The route follower sends sparse route points at a constant speed, without judging traffic or
+   lights. Keep the default controller and seed, optional assistance off, and the Claude
+   isolation check on. Use `python tools/summarize_results.py <session-dir> ...` and inspect any
+   aborts before scheduling a larger run. Treat this single route as a pipeline check.
+3. **Measure driving across routes.** Use `benchmark/routes/dev10.txt` with three independent
+   sessions per route per arm. Start with the sensors track and the route follower and Claude
+   configurations above. Record every scheduled attempt, including aborts. Report DS, RC, IS,
+   infractions, commands, wall time, and the per-route spread with the settings in
+   [the reporting protocol](../benchmark/PROTOCOL.md#reporting). Analyze privileged or dense
+   variants separately. Use the scored Codex adapter in §4.5 for a Codex-versus-Claude comparison.
+4. **Validate generalization separately.** Once the setup is stable, validate the custom
+   Fail2Drive build on both routes in `benchmark/routes/f2d_pair.txt` (§3.3). Report paired
+   Base-to-Generalization change using `tools/f2d_score.py`. Reserve the held-out routes for
+   evaluation.
+
+### 4.4 Interactive driving with Codex or Claude Code
+
+After [setup](#2-setup), start the coding agent in this repo and ask it to drive Bench2Drive
+route `25378` on the sensors track. The same shell client works in either agent. Run the launcher
+in the background and note the session directory it prints.
+
+```bash
+BENCHMARK=bench2drive ACCESS=sensors bash scripts/run_session.sh 25378
+```
+
+From a second shell at the repo root, connect with the repo's interpreter. With a custom
+`PROBE_PORT`, put `127.0.0.1:<port>` before `--wait` or the command name.
+
+```bash
+.venv/bin/python -m carla_probe.client --wait 600 status
+.venv/bin/python -m carla_probe.client percept
+```
+
+Confirm `status.access`. Read [the drive loop](OPERATOR_GUIDE.md#6-the-drive-loop) and
+[the sensors technique](OPERATOR_GUIDE.md#8-driving-on-the-sensors-track). Open the returned
+camera images using the agent's image viewer, plan from the current scene, and advance with
+`apply_plan` and an observation-based `why=`. Repeat until `route_end` or the connection closes.
+Follow the driving rules in [the protocol](../benchmark/PROTOCOL.md), and summarize the session
+afterwards. This workflow is for debugging and practice. Scored evaluations use §4.2.
+
+### 4.5 Scored Codex runs
+
+Authenticate the Codex CLI with `codex login`. Set `DRIVER=codex` when launching an evaluation.
+The adapter uses a fresh workspace and Codex home, with the CLI's file-based authentication or
+`OPENAI_API_KEY`. It disables the shell, web search, external apps and subagents. A local MCP
+server exposes the probe, the three driver documents, and artifacts named in probe replies.
+With `CODE_TOOL=on`, it also exposes script editing in the private code directory and execution
+via the existing audited Python runner (§8b of the driving guide). That runner enforces the same
+file and network rules as the Claude Code arm and has the same native-extension limitations.
+
+Before driving, the launcher verifies that Codex reads the protocol and calls `status`.
+A separate deterministic check verifies that the same server denies reads of session
+metadata. The code arm also verifies that script writes and execution outside the private
+directory are denied, and runs the launcher’s code confinement check. A failed preflight ends
+the session before a driving command. Inspect `isolation_check.jsonl`,
+`isolation_check_stderr.log`, and `isolation_denials.jsonl` when diagnosing these failures.
+Record the model, CLI version,
+reasoning effort, prompt and document hashes, and `codex_config.toml` with the result. Codex uses
+its selected model's default reasoning effort unless `CODEX_REASONING_EFFORT` is set.
+
+The following mirrors the configurations of the recorded Claude Code experiments. Use the
+same `dev10` route IDs, `TM_SEED=0`, default route budget, and fresh session directories.
+
+| Arm | Settings | Repeat count |
+|---|---|---|
+| A1 Privileged+ | `privileged`, `PRIV_EXTRAS=1 PID_PRESET=plus` | Three per route |
+| B3s+L | `sensors`, `CODE_TOOL=on PID_PRESET=plus`, strong perception and the frozen driver library | One per route |
+
+```bash
+DRIVER=codex PRIV_EXTRAS=1 PID_PRESET=plus \
+  bash scripts/run_eval.sh "$route" privileged gpt-6.2-sol
+
+# Start the strong backend with scripts/run_perception_server.sh using BACKEND=strong.
+DRIVER=codex CODE_TOOL=on PID_PRESET=plus PERCEPTION_ADDR=127.0.0.1:8795 \
+  CODE_LIB="$frozen_library" bash scripts/run_eval.sh "$route" sensors gpt-6.2-sol
+```
+
+Use the library snapshot and backend from the Claude batch metadata when comparing results.
+Keep `VLA`, `INFO_EXTRAS`, and `TFV6` off for these runs. The library in the current checkout
+also supports the separate B5 arm, which uses TransFuser perception. Report differences in
+the source commits, Codex and Claude Code tool interfaces, and reference coverage.
+
+### 4.6 Preparing the full Bench2Drive B3s+L run on another host
+
+Use the updated Codex harness with calibration and private image output support. The B3s+L
+configuration uses `gpt-6.2-sol` with its default reasoning effort, the `sensors` track,
+`PID_PRESET=plus`, `CODE_TOOL=on`, and `TM_SEED=0`. Keep `VLA=off`, `TFV6=0`,
+`INFO_EXTRAS=0`, and `PRIV_EXTRAS=0`. Leave leaderboard budget overrides unset and isolation
+enabled. The experiment uses the historical perception library without an object motion tracker.
+
+Restore the exact B3s+L library from Git. Use a fresh path outside the driver workspace.
+
+```bash
+frozen_library="$(mktemp -d)"
+git archive e5772610fb81f767b36b1d7836de91261f4d7b1f carla_probe/driver_lib \
+  | tar -x --strip-components=2 -C "$frozen_library"
+(cd "$frozen_library" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum)
+```
+
+The digest should be `47d1c758aa3f780a647a184b0f28a517bf5fb9392f90023bfcae4856977029a7`.
+Install the strong backend with `scripts/setup_perception2.sh`. The perception server's account
+needs access to the gated `facebook/sam3` model. Give the server a readable `HF_TOKEN_PATH` for
+an authorized credential or log in as its user. With `HF_HUB_OFFLINE` unset, prefetch
+`config.json` and `sam3.pt` into the `HF_HOME` the server will use. Set `HF_HUB_OFFLINE=1` only
+after both files are cached. Start `scripts/run_perception_server.sh` with `BACKEND=strong` and
+verify that `/health` reports `apple/depthpro2-h` and `facebook/sam3`. Credentials belong to the
+server process. The evaluated driver uses the local perception endpoint.
+
+Generate the route manifest from the pinned `third_party/Bench2Drive/leaderboard/data/bench2drive220.xml`.
+Check all 220 unique route IDs against their split files and confirm the required maps are
+installed. Record the source commit, document and library hashes, and one scheduled attempt per
+route. Keep the manifest and all results under `sessions/` or outside the repo. Keep official
+partial scores for driving failures. Save and retry infrastructure failures separately.
+
+For a multi-GPU run, assign each worker its own `GPU_RANK` and unused ports. Space CARLA RPC
+ports by at least 10, and give each traffic manager and probe a unique port. The existing
+`ops/lanes*.sh` scripts use Hornet's paths and quota logic and pin CARLA to GPU 0. Validate two
+concurrent workers, including one on a nonzero GPU, before filling the machine. The strong
+perception service serializes inference per process. Check latency and GPU memory before
+sharing one service across workers. Keep the queue resumable and stop launching new drives
+when account quota or a shared service is unavailable.
 
 ## 5. Recording and analysis
 

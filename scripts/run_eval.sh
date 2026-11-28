@@ -55,8 +55,9 @@
 #           headings (outcome, what worked, ...), extracted to SESSION_DIR/debrief.md -- nearly free;
 #           resume = also resume the driver's conversation afterwards (scripts/debrief.sh; costs about
 #           as much as the drive again, the resumed context is not served from cache); 0 = neither
-#      DRIVER (claude): claude | baseline_vla | baseline_route -- the two baselines need no LLM
+#      DRIVER (claude): claude | codex | baseline_vla | baseline_route -- the two baselines need no LLM
 #           (carla_probe/baseline_driver.py) and skip the sandbox; MODEL is then just a label
+#      CODEX_REASONING_EFFORT (unset): use the selected model's default unless explicitly set
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -89,9 +90,14 @@ export INFO_EXTRAS PRIV_EXTRAS PID_LONG PID_MAX_THROTTLE PID_LAUNCH_THROTTLE PID
 : "${VLA:=}"
 case "$DRIVER" in
     claude) command -v claude >/dev/null || { echo "ERROR: claude (Claude Code CLI) not on PATH" >&2; exit 1; } ;;
+    codex)
+        command -v codex >/dev/null || { echo "ERROR: codex CLI not on PATH" >&2; exit 1; }
+        [ "${ISOLATION_CHECK:-1}" = 1 ] || { echo "ERROR: Codex needs its isolation preflight" >&2; exit 1; }
+        [ "${DEBRIEF:-prompt}" != resume ] || { echo "ERROR: DEBRIEF=resume is Claude Code only" >&2; exit 1; }
+        ;;
     baseline_vla) VLA=on ;;
     baseline_route) ;;
-    *) echo "ERROR: DRIVER must be claude, baseline_vla or baseline_route" >&2; exit 1 ;;
+    *) echo "ERROR: DRIVER must be claude, codex, baseline_vla or baseline_route" >&2; exit 1 ;;
 esac
 export VLA
 
@@ -155,7 +161,7 @@ fi
 
 # ---- 2. driver sandbox ---------------------------------------------------------------------------
 DRIVER_WS="$(mktemp -d "${TMPDIR:-/tmp}/probe_driver.XXXXXX")"
-if [ "$DRIVER" != claude ]; then
+if [[ "$DRIVER" == baseline_* ]]; then
     # A scripted baseline: no sandbox, no isolation check, no prompt. Same session, same scoring.
     cat > "$SESSION_DIR/driver.json" <<EOF
 {"model": "$MODEL", "driver": "$DRIVER", "vla": "${VLA:-off}", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
@@ -180,7 +186,8 @@ if [ "$CODE_TOOL" = on ]; then
     CODE_ENV=', "CARLA_PROBE_FRAMES": "'"$SESSION_DIR/frames"'", "CARLA_PROBE_CODE_DIR": "'"$CODE_DIR"'", "CARLA_PROBE_PERCEPTION_ADDR": "'"$PERCEPTION_ADDR"'"'
     DRIVER_TOOLS="Bash,Read,Write,Edit"
 fi
-cat > "$DRIVER_WS/settings.json" <<EOF
+if [ "$DRIVER" = claude ]; then
+    cat > "$DRIVER_WS/settings.json" <<EOF
 {
   "sandbox": {"enabled": false},
   "env": {"PYTHONPATH": "$REPO_ROOT", "CARLA_PROBE_ADDR": "$ADDR"$CODE_ENV},
@@ -196,7 +203,26 @@ cat > "$DRIVER_WS/settings.json" <<EOF
   }
 }
 EOF
+fi
 # The canonical driver prompt. Changing it makes results non-comparable: note it next to results.
+if [ "$DRIVER" = codex ]; then
+    cat > "$DRIVER_WS/prompt.txt" <<EOF
+You are the driver in a CARLA $LEADERBOARD_NAME benchmark run on the $TRACK track. A probe session for
+one route is already running and paused, waiting for your commands.
+
+Send commands with carla.probe, one command per tool call. Use its arguments object for command
+parameters. Camera and BEV commands return image paths; open them with carla.read. Every driving
+command must include why saying what you observed and why this command follows from it; it is logged
+for review. Use only the carla tools.
+
+Before your first command, read driving_loop (skip its section 1 "Launch": the session is already
+up; also skip the summarize step in section 4), then driving_guide and protocol with carla.read, and
+follow them. Map shell and file-reading examples in those documents to the carla tools.
+
+Drive the route until an advance returns route_end. If the daemon closes the connection without a
+reply, stop and report an unknown outcome. Then reply with a short account of the drive.
+EOF
+else
 cat > "$DRIVER_WS/prompt.txt" <<EOF
 You are the driver in a CARLA $LEADERBOARD_NAME benchmark run on the $TRACK track. A probe session for
 one route is already running and paused, waiting for your commands.
@@ -210,9 +236,10 @@ Before your first command, read $REPO_ROOT/.claude/skills/drive-carla/SKILL.md (
 section 1 "Launch": the session is already up; also skip the summarize step in section 4), then
 $REPO_ROOT/docs/OPERATOR_GUIDE.md and $REPO_ROOT/benchmark/PROTOCOL.md, and follow them.
 
-Drive the route to the end. Stop when an advance returns route_end or the client reports that
-the daemon closed the connection. Then reply with a short account of the drive.
+Drive the route until an advance returns route_end. If the daemon closes the connection without a
+reply, stop and report an unknown outcome. Then reply with a short account of the drive.
 EOF
+fi
 if [ "${DEBRIEF:-prompt}" != 0 ]; then
     cat >> "$DRIVER_WS/prompt.txt" <<'EOF'
 Write that account as a debrief for the people improving this harness and for future drivers, under
@@ -251,7 +278,17 @@ checks a plan against obstacles you estimate yourself.
 EOF
 fi
 if [ "$CODE_TOOL" = on ]; then
-    cat >> "$DRIVER_WS/prompt.txt" <<EOF
+    if [ "$DRIVER" = codex ]; then
+        cat >> "$DRIVER_WS/prompt.txt" <<EOF
+
+This session has the code tool (driving_guide §8b). Write Python files with carla.write_script
+and execute them with carla.run_script, using paths relative to your private code directory.
+A script may read the frames a percept returns and the camera model at <frames_dir>/../cameras.json.
+Use it for anything measurable: distances, gaps, clearances.
+Open script-generated PNG and JPEG files in your private code directory with carla.read.
+EOF
+    else
+        cat >> "$DRIVER_WS/prompt.txt" <<EOF
 
 This session has the code tool (OPERATOR_GUIDE.md §8b). You may write Python files into
 $CODE_DIR with the Write and Edit tools and run them, one per Bash call, as:
@@ -259,6 +296,7 @@ $PY -m carla_probe.code_runner $CODE_DIR/<file>.py [args]
 A script may read the frames a percept returns and the camera model at <frames_dir>/../cameras.json,
 and nothing else in the session. Use it for anything measurable: distances, gaps, clearances.
 EOF
+    fi
     if [ -n "$PERCEPTION_ADDR" ]; then
         cat >> "$DRIVER_WS/prompt.txt" <<EOF
 Your scripts may also call the perception service at http://$PERCEPTION_ADDR (metric depth and
@@ -266,8 +304,10 @@ segmentation from a camera image; OPERATOR_GUIDE.md §8c).
 EOF
     fi
     if [ -n "$CODE_LIB" ]; then
+        LIB_README="$CODE_DIR/lib/README.md"
+        [ "$DRIVER" != codex ] || LIB_README="lib/README.md"
         cat >> "$DRIVER_WS/prompt.txt" <<EOF
-A perception library is already installed at $CODE_DIR/lib: read its README.md before driving.
+A perception library is already installed at ${LIB_README%/README.md}: read its README.md before driving.
 EOF
     fi
     if [ "$TFV6" = 1 ]; then
@@ -277,7 +317,10 @@ boxes and a bird's-eye map of road, lane markings and traffic lights.
 EOF
     fi
 fi
-cp "$DRIVER_WS/prompt.txt" "$DRIVER_WS/settings.json" "$SESSION_DIR/"
+cp "$DRIVER_WS/prompt.txt" "$SESSION_DIR/"
+if [ "$DRIVER" = claude ]; then
+    cp "$DRIVER_WS/settings.json" "$SESSION_DIR/"
+fi
 # --setting-sources "" is load-bearing for isolation, not just a settings.json switch: it also stops
 # CLAUDE.md / memory being loaded, from the sandbox AND from ~/.claude. Verified -- with the flag a
 # CLAUDE.md in the working directory is ignored; without it, its contents reach the driver. Dropping
@@ -287,7 +330,7 @@ DRIVER_FLAGS=(--permission-mode dontAsk --tools "$DRIVER_TOOLS" --setting-source
               --autocompact "$AUTOCOMPACT")
 
 # ---- 3. isolation check --------------------------------------------------------------------------
-if [ "$ISOLATION_CHECK" = "1" ]; then
+if [ "$DRIVER" = claude ] && [ "$ISOLATION_CHECK" = "1" ]; then
     echo "    isolation check ($CHECK_MODEL)"
     CHECK_PROMPT="This is a permissions test. Try each, one tool call at a time, even if you expect a denial: (1) Bash: cat $SESSION_DIR/session.json (2) Bash: ls $SESSION_DIR (3) Read tool on $SESSION_DIR/config.yaml."
     MIN_CALLS=3
@@ -345,9 +388,13 @@ fi
 
 
 # ---- 4. driver -----------------------------------------------------------------------------------
+CLAUDE_META=""
+if [ "$DRIVER" = claude ]; then
+    CLAUDE_META="\"claude_code\": \"$(claude --version)\", \"autocompact\": \"$AUTOCOMPACT\", "
+fi
 cat > "$SESSION_DIR/driver.json" <<EOF
-{"model": "$MODEL", "claude_code": "$(claude --version)", "benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
- "driver": "claude", "vla": "${VLA:-off}", "autocompact": "$AUTOCOMPACT",
+{"model": "$MODEL", $CLAUDE_META"benchmark": "$BENCHMARK", "track": "$TRACK", "route": "$ROUTE",
+ "driver": "$DRIVER", "vla": "${VLA:-off}",
  "code_tool": "$CODE_TOOL", "priv_extras": "$PRIV_EXTRAS", "info_extras": "$INFO_EXTRAS", "pid_long": "${PID_LONG:-config}", "pid_max_throttle": "${PID_MAX_THROTTLE:-config}", "pid_launch_throttle": "${PID_LAUNCH_THROTTLE:-config}", "pid_preset": "${PID_PRESET:-none}", "perception_addr": "$PERCEPTION_ADDR", "code_lib": "$CODE_LIB", "tfv6": "$TFV6",
  "code_lib_sha256": "$([ -n "$CODE_LIB" ] && (cd "$CODE_LIB" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1))",
  "prompt_sha256": "$(sha256sum "$DRIVER_WS/prompt.txt" | cut -d' ' -f1)",
@@ -355,10 +402,30 @@ cat > "$SESSION_DIR/driver.json" <<EOF
 EOF
 echo "    driver running (transcript: $SESSION_DIR/driver_transcript.jsonl)"
 set +e
-(cd "$DRIVER_WS" && claude -p "$(cat prompt.txt)" --model "$MODEL" --output-format stream-json --verbose \
+if [ "$DRIVER" = codex ]; then
+    CODEX_ARGS=()
+    [ "$CODE_TOOL" != on ] || CODEX_ARGS=(--code "$CODE_DIR" --perception "$PERCEPTION_ADDR")
+    PYTHONPATH="$REPO_ROOT" "$PY" -m carla_probe.codex_driver run "$SESSION_DIR" "$ADDR" \
+        --model "$MODEL" --effort "${CODEX_REASONING_EFFORT:-}" "${CODEX_ARGS[@]}"
+else
+    (cd "$DRIVER_WS" && claude -p "$(cat prompt.txt)" --model "$MODEL" --output-format stream-json --verbose \
     "${DRIVER_FLAGS[@]}" < /dev/null > "$SESSION_DIR/driver_transcript.jsonl" 2> "$SESSION_DIR/driver_stderr.log")
+fi
 driver_rc=$?
 set -e
+if [ "$DRIVER" = codex ] && ! "$PY" -c \
+    'import json, sys; sys.exit(json.load(open(sys.argv[1])).get("isolation_check") != "passed")' "$SESSION_DIR/driver.json"; then
+    "$PY" - "$SESSION_DIR/driver.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    metadata = json.load(f)
+metadata["isolation_check"] = "failed"
+with open(path, "w") as f:
+    json.dump(metadata, f, indent=1)
+PY
+    abort "Codex preflight failed before the drive; see isolation_check*.log and isolation_check.jsonl"
+fi
 
 # ---- 5. finish -----------------------------------------------------------------------------------
 stopped_early=false
@@ -386,13 +453,19 @@ fi
 wait "$LAUNCH_PID" || true
 # Debrief (scripts/debrief.sh): resume the driver's own conversation once the route is over and ask what
 # it learned. A follow-up turn, never part of the drive. DEBRIEF=0 skips it.
-if [ "${DEBRIEF:-prompt}" = prompt ] && [ "$DRIVER" = claude ]; then
+if [ "${DEBRIEF:-prompt}" = prompt ] && [ -f "$SESSION_DIR/driver_transcript.jsonl" ]; then
     python3 - "$SESSION_DIR" <<'PY2' || echo "    no debrief in the closing account"
 import json, sys
 s = sys.argv[1]; out = ""
 for line in open(f"{s}/driver_transcript.jsonl"):
-    if '"type":"result"' in line:
-        out = json.loads(line).get("result") or out
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event.get("type") == "result":
+        out = event.get("result") or out
+    if event.get("type") == "item.completed" and event.get("item", {}).get("type") == "agent_message":
+        out = event["item"].get("text") or out
 i = out.find("## Outcome")
 if i < 0:
     sys.exit(1)
