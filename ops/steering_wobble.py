@@ -6,7 +6,8 @@ ARMS = [("A0", f"{H}/ccd_base/sessions/priv_opus/a1/route_*_privileged"), ("A0+"
         ("A1", f"{H}/ccd_priv2/sessions/priv_v2/a[123]/route_*_privileged"), ("B0+", f"{H}/ccd_priv2/sessions/ladder_plus/B0_sensors/a1/route_*"),
         ("B0g+", f"{H}/ccd_priv2/sessions/ladder_plus/B0_sensors_guidefix/a1/route_*"), ("B2+", f"{H}/ccd_priv2/sessions/ladder_plus/B2_dense_code/a1/route_*"),
         ("B3s+", f"{H}/ccd_priv2/sessions/ladder_plus/B3s_strong_perc/a1/route_*"),
-        ("B3s+L", f"{H}/ccd_priv2/sessions/ladder_plus/B3s_guide_lib/a1/route_*")]
+        ("B3s+L", f"{H}/ccd_priv2/sessions/ladder_plus/B3s_guide_lib/a1/route_*"),
+        ("B5", f"{H}/ccd_priv2/sessions/ladder_plus/B5_tfv6/a1/route_*")]
 def analyse(d):
     T = [json.loads(l) for l in open(f"{d}/trajectory.jsonl")]
     if len(T) < 200: return None

@@ -195,10 +195,27 @@ the background; this file has the current state and the open tasks.
   drive) and zoomed more (11 zoom reads against 7 crops).
 - Weekly usage 0.88 at the last gate (00:24 UTC 11-27); the cap is 0.0 until the weekly reset.
 
+## B5 results (Friday 11-27 night, 19:01 to 23:08 Paris; all 10 valid)
+
+- Mean DS 90.7 (B3s+L 70.6, B3s+ 81.9, B2+ 81.6, A0 88.3, A0+ 96.4). Per route: 17569 100, 2091 39
+  (one vehicle + one roadside collision, as B3s+), 25378 70 (no yield to the ambulance, as every camera
+  arm), 25381 100, 25424 100, 26405 100, 27494 97.7 (outside lanes briefly; no red light this time),
+  28198 100, 3255 100, 3514 100. One vehicle collision in 10 drives (B3s+L 5, B3s+ 2).
+- Cheapest camera arm: $10.7 per drive mean, $8.9 median, $0.41 per decision (B3s+ $13.2 / $13.2 /
+  $0.43; B3s+L $16.7 / $12.4 / $0.47); thinking 59k (71k); images viewed 30 (44); 27 min (30).
+- Every driver used lib.scene (1-6 scripts per drive); 5 of 10 also used objects.scan, 4 the old lane
+  scan; scene_bev.png viewed in 8 of 10 drives; TransFuser's own camera images barely opened.
+- Wobble unchanged: steering reversals 47 per 10 s of straight cruising (B3s+ 47, A1 2.6); plan-to-plan
+  path shift at 8 m median 18 cm (B3s+ 24), p90 72 cm.
+- Infra: the first 28198 drive lost its CARLA server; the watchdog quarantined it to `_infra/` and the
+  rerun scored 100. Weekly usage 0.08 at the last gate (22:41 Paris); cap 0.0 now.
+- One attempt per route.
+
 ## Order of runs (proposed 11-26)
 
 1. Thu night: B3s+L (perception library + guide rule), 10 routes. Done: see above.
-2. Fri 11-27 night: B5 (TransFuser scene tool on top of B3s+L), 10 routes, SCHEDULED:
+2. Fri 11-27 night: B5 (TransFuser scene tool on top of B3s+L), 10 routes. Done, 90.7: see above.
+   It was scheduled with
    `~/workspace/b5_launch.sh "2026-11-27 17:55" 0.20` (running, waiting). Library frozen at the
    current main in `~/workspace/frozen_libs/driver_lib_b5`. End to end checked without Claude usage
    (TransFuser behind the perception service's /scene, called from lib inside code_runner).
