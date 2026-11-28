@@ -172,10 +172,57 @@ the background; this file has the current state and the open tasks.
 - B3s+L uses a library frozen at the PR #4 merge (`~/workspace/frozen_libs/driver_lib_b3sL`, no
   `scene` module), so it is the condition that was agreed even though `main` now has scene.py.
 
+## B3s+L results (Thursday 11-26 night, run 22:33 to 02:08 Paris; all 10 valid)
+
+- Mean DS 70.6 (B3s+ 81.9, B2+ 81.6). Per route: 17569 60, 2091 11.1 (ran out of time, RC 47),
+  25378 70, 25381 100, 25424 68.9, 26405 30.5, 27494 70, 28198 95.2, 3255 100, 3514 100.
+  Vehicle collisions 5 in 10 drives (B3s+ 2): 2091 x2, 26405 x2, 17569 x1; red light 27494; ambulance 25378.
+- Tokens did NOT go down: API-equivalent $16.7 per drive (B3s+ $13.2, B2+ $12.8), thinking 77k (71k),
+  wall 34 min (30). Drivers wrote much less code (105 lines per drive against 280) but ran more scripts
+  (54 against 46) and opened more images (56 against 44).
+- Library use: every driver read lib/README.md and used objects, lanes and zoom; only one (26405) used
+  LaneTracker.
+- Wobble unchanged: steering reversals 56 per 10 s of straight cruising (B3s+ 47, A1 2.6); plan-to-plan
+  path shift at 8 m median 20 cm (24), p90 74 cm (85).
+- One attempt per route; a ~11-point gap is at the edge of the noise.
+- Transcript dig (11-27): the cost rise is two long, failed drives, not the library. Median cost per
+  drive $12.4 (B3s+ $13.2); cost per decision flat (~$0.40-0.47). 2091 ran all 3,999 steps (61
+  decisions, $24.7: waited 500 ticks for a gap, then a full-lock manual turn into traffic) and 26405
+  took 56 decisions ($35.2: went the wrong side of a parked police car on the GPS offset). Cost is
+  re-reading the context every turn (17-23M cached input tokens per drive against ~75k generated), so
+  writing less code (a few thousand tokens) cannot move it; fewer turns per decision and smaller
+  contexts would. Drivers built one per-decision look.py (lanes + tracker + objects, ~25 runs per
+  drive) and zoomed more (11 zoom reads against 7 crops).
+- Weekly usage 0.88 at the last gate (00:24 UTC 11-27); the cap is 0.0 until the weekly reset.
+
+## B5 results (Friday 11-27 night, 19:01 to 23:08 Paris; all 10 valid)
+
+- Mean DS 90.7 (B3s+L 70.6, B3s+ 81.9, B2+ 81.6, A0 88.3, A0+ 96.4). Per route: 17569 100, 2091 39
+  (one vehicle + one roadside collision, as B3s+), 25378 70 (no yield to the ambulance, as every camera
+  arm), 25381 100, 25424 100, 26405 100, 27494 97.7 (outside lanes briefly; no red light this time),
+  28198 100, 3255 100, 3514 100. One vehicle collision in 10 drives (B3s+L 5, B3s+ 2).
+- Cheapest camera arm: $10.7 per drive mean, $8.9 median, $0.41 per decision (B3s+ $13.2 / $13.2 /
+  $0.43; B3s+L $16.7 / $12.4 / $0.47); thinking 59k (71k); images viewed 30 (44); 27 min (30).
+- Every driver used lib.scene (1-6 scripts per drive); 5 of 10 also used objects.scan, 4 the old lane
+  scan; scene_bev.png viewed in 8 of 10 drives; TransFuser's own camera images barely opened.
+- Wobble unchanged: steering reversals 47 per 10 s of straight cruising (B3s+ 47, A1 2.6); plan-to-plan
+  path shift at 8 m median 18 cm (B3s+ 24), p90 72 cm.
+- Infra: the first 28198 drive lost its CARLA server; the watchdog quarantined it to `_infra/` and the
+  rerun scored 100. Weekly usage 0.08 at the last gate (22:41 Paris); cap 0.0 now.
+- One attempt per route.
+
 ## Order of runs (proposed 11-26)
 
-1. Thu night: B3s+L (perception library + guide rule), 10 routes.
-2. Fri night, after the weekly reset: B5 (TransFuser scene tool on top of B3s+L), 10 routes.
+1. Thu night: B3s+L (perception library + guide rule), 10 routes. Done: see above.
+2. Fri 11-27 night: B5 (TransFuser scene tool on top of B3s+L), 10 routes. Done, 90.7: see above.
+   It was scheduled with
+   `~/workspace/b5_launch.sh "2026-11-27 17:55" 0.20` (running, waiting). Library frozen at the
+   current main in `~/workspace/frozen_libs/driver_lib_b5`. End to end checked without Claude usage
+   (TransFuser behind the perception service's /scene, called from lib inside code_runner).
+2b. Then B5c: B5 with AUTOCOMPACT=100k (the user's order, 11-27), after the B5 morning check:
+   `~/workspace/b5c_launch.sh "<start UTC>" <cap>`, job list `sessions/ladder_plus/jobs_b5c.txt`.
+   Why: no drive ever compacted (context grows to 300-430k under `auto`); replaying the drives with
+   compaction at 100k to a 30k summary roughly halves input tokens.
 3. Next: training routes with a working memory (not built yet): 10 training routes driven in
    sequence with a shared memory, then the 10 test routes with it frozen.
 4. Parked: teacher/student.
